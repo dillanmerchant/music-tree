@@ -1,0 +1,53 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = "file:./dev.db"
+}
+
+model Playlist {
+  id        Int      @id @default(autoincrement())
+  name      String
+  createdAt DateTime @default(now())
+
+  // Relationships
+  songs Song[]
+}
+
+model Song {
+  id          Int      @id @default(autoincrement())
+  title       String
+  artist      String?
+  path        String
+  duration    Float?
+  createdAt   DateTime @default(now())
+
+  // Foreign key to Playlist
+  playlistId  Int
+  playlist    Playlist @relation(fields: [playlistId], references: [id], onDelete: Cascade)
+
+  // Self-referencing relationships (connections)
+  connectionsFrom SongConnection[] @relation("FromConnections")
+  connectionsTo   SongConnection[] @relation("ToConnections")
+}
+
+model SongConnection {
+  id              Int      @id @default(autoincrement())
+  fromSongId      Int
+  toSongId        Int
+  connectionType  String?
+  strength        Float?
+  createdAt       DateTime @default(now())
+
+  // Self-referencing relation setup
+  fromSong Song @relation("FromConnections", fields: [fromSongId], references: [id], onDelete: Cascade)
+  toSong   Song @relation("ToConnections", fields: [toSongId], references: [id], onDelete: Cascade)
+}
