@@ -1,41 +1,40 @@
-# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+# Dependencies
+node_modules/
 
-# dependencies
-/node_modules
-/.pnp
-.pnp.*
-.yarn/*
-!.yarn/patches
-!.yarn/plugins
-!.yarn/releases
-!.yarn/versions
+# Build outputs
+dist/
+release/
 
-# testing
-/coverage
+# Electron
+*.dmg
+*.exe
+*.AppImage
 
-# next.js
-/.next/
-/out/
+# Prisma
+prisma/*.db
+prisma/*.db-journal
+node_modules/.prisma/
 
-# production
-/build
-
-# misc
+# Misc
 .DS_Store
 *.pem
 
-# debug
+# Debug logs
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 
-# env files (can opt-in for committing if needed)
-.env*
+# Environment files
+.env
+.env.local
+.env.*.local
 
-# vercel
-.vercel
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
 
-# typescript
+# TypeScript
 *.tsbuildinfo
-next-env.d.ts

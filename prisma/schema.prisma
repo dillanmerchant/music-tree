@@ -1,0 +1,87 @@
+// Prisma schema for Music Tree DJ Helper
+// Manages songs, playlists, connections, and user settings
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// Song model - stores all metadata for imported MP3s
+model Song {
+  id        String   @id @default(cuid())
+  title     String
+  artist    String?
+  bpm       Float?
+  key       String?  // Camelot notation (e.g., "8A", "7B")
+  duration  Float?   // Duration in seconds
+  filePath  String   @unique
+  fileName  String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relationships
+  playlistSongs PlaylistSong[]
+  
+  // Connections where this song is the source
+  connectionsFrom SongConnection[] @relation("ConnectionSource")
+  // Connections where this song is the target
+  connectionsTo   SongConnection[] @relation("ConnectionTarget")
+}
+
+// Playlist model - user-created collections of songs
+model Playlist {
+  id        String   @id @default(cuid())
+  name      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relationship to songs through join table
+  songs PlaylistSong[]
+}
+
+// Join table for many-to-many relationship between Playlist and Song
+model PlaylistSong {
+  id         String   @id @default(cuid())
+  playlistId String
+  songId     String
+  position   Int      // Order of song in playlist
+  addedAt    DateTime @default(now())
+
+  playlist Playlist @relation(fields: [playlistId], references: [id], onDelete: Cascade)
+  song     Song     @relation(fields: [songId], references: [id], onDelete: Cascade)
+
+  @@unique([playlistId, songId])
+  @@index([playlistId])
+  @@index([songId])
+}
+
+// SongConnection - defines which songs work well together
+model SongConnection {
+  id           String   @id @default(cuid())
+  sourceSongId String
+  targetSongId String
+  notes        String?  // Optional notes about why they work together
+  bidirectional Boolean @default(false)  // true = two-way, false = one-way (source -> target)
+  createdAt    DateTime @default(now())
+
+  sourceSong Song @relation("ConnectionSource", fields: [sourceSongId], references: [id], onDelete: Cascade)
+  targetSong Song @relation("ConnectionTarget", fields: [targetSongId], references: [id], onDelete: Cascade)
+
+  @@unique([sourceSongId, targetSongId])
+  @@index([sourceSongId])
+  @@index([targetSongId])
+}
+
+// Settings - user preferences for the app
+model Settings {
+  id                      String @id @default("default")
+  bpmTolerance            Int    @default(5)  // BPM range for recommendations (+/-)
+  showRecommendations     Boolean @default(true)
+  theme                   String  @default("dark")
+  lastImportPath          String?
+  getSongBpmApiKey        String? // API key for getsongbpm.com BPM/Key lookups
+}
