@@ -1,10 +1,28 @@
-const { app, BrowserWindow, ipcMain, dialog } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, protocol, shell, Notification, net } = require('electron');
 const path = require('path');
+const { pathToFileURL } = require('url');
 const { PrismaClient } = require('@prisma/client');
 const fs = require('fs');
 const { execSync } = require('child_process');
 const youtubedl = require('youtube-dl-exec');
-const { getTracks, getDetails } = require('spotify-url-info')(fetch);
+const NodeID3 = require('node-id3');
+
+// Custom fetch for Spotify: use Electron's net.fetch (no CORS) with browser-like headers
+const spotifyFetch = (url, opts = {}) => {
+  const headers = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+    'Accept-Language': 'en-US,en;q=0.9',
+    ...(opts.headers || {})
+  };
+  return net.fetch(url, { ...opts, headers });
+};
+const { getTracks, getDetails, getPreview, getData } = require('spotify-url-info')(spotifyFetch);
+
+function sanitizeFilename(str) {
+  if (!str || typeof str !== 'string') return 'Unknown';
+  return str.replace(/[/\\:*?"<>|]/g, '').trim() || 'Unknown';
+}
 
 let mm;
 async function getMM() {
@@ -62,14 +80,68 @@ function createWindow() {
   }
 }
 
+// Register custom protocol as privileged so <audio> can stream from it (must be before app.ready)
+protocol.registerSchemesAsPrivileged([
+  { scheme: 'music-tree-file', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } }
+]);
+
+function registerAudioProtocol() {
+  if (typeof protocol.handle === 'function') {
+    protocol.handle('music-tree-file', (request) => {
+      try {
+        console.log('[Protocol] Request URL:', request.url.slice(0, 100));
+        const u = new URL(request.url);
+        console.log('[Protocol] Parsed — host:', u.hostname, 'pathname:', u.pathname.slice(0, 60));
+        const encoded = u.pathname.startsWith('/') ? u.pathname.slice(1) : u.pathname;
+        const filePath = Buffer.from(encoded, 'base64url').toString('utf-8');
+        console.log('[Protocol] Decoded filePath:', filePath);
+
+        if (!fs.existsSync(filePath)) {
+          console.error('[Protocol] File NOT found on disk:', filePath);
+          return new Response('Not Found', { status: 404 });
+        }
+        console.log('[Protocol] File exists, serving via net.fetch');
+        const fileUrl = pathToFileURL(filePath).href;
+        return net.fetch(fileUrl);
+      } catch (e) {
+        console.error('[Protocol] Handler error:', e);
+        return new Response('Not Found', { status: 404 });
+      }
+    });
+  } else {
+    protocol.registerFileProtocol('music-tree-file', (request, callback) => {
+      try {
+        const u = new URL(request.url);
+        const encoded = u.pathname.startsWith('/') ? u.pathname.slice(1) : u.pathname;
+        const filePath = Buffer.from(encoded, 'base64url').toString('utf-8');
+        callback({ path: filePath });
+      } catch (e) {
+        callback({ error: -2 });
+      }
+    });
+  }
+}
+
 app.whenReady().then(async () => {
+  registerAudioProtocol();
+
   // Initialize Prisma with correct path
   initializePrisma();
   
   try {
     await prisma.$connect();
     console.log('Database connected successfully');
-    
+    // Ensure schema is in sync (e.g. new columns like downloadFolderPath)
+    try {
+      const userDbPath = path.join(app.getPath('userData'), 'music-tree.db');
+      execSync('npx prisma db push', {
+        env: { ...process.env, DATABASE_URL: `file:${userDbPath}` },
+        stdio: 'pipe',
+        cwd: path.join(__dirname, '..')
+      });
+    } catch (pushErr) {
+      // Ignore if already in sync
+    }
     // Initialize default settings if they don't exist
     let settings = await prisma.settings.findUnique({ where: { id: 'default' } });
     if (!settings) {
@@ -431,6 +503,37 @@ ipcMain.handle('open-folder-dialog', async () => {
   }
 });
 
+// Get a playable URL for a local audio file (uses custom protocol so renderer can play it)
+ipcMain.handle('get-audio-url', (_, filePath) => {
+  console.log('[get-audio-url] Requested for:', filePath);
+  if (!filePath || typeof filePath !== 'string') {
+    console.error('[get-audio-url] Invalid file path:', filePath);
+    return { success: false, error: 'Invalid file path' };
+  }
+  const exists = fs.existsSync(filePath);
+  console.log('[get-audio-url] File exists:', exists);
+  // Base64url encoding avoids Chromium URL normalization issues (host lowercasing, etc.)
+  const encoded = Buffer.from(filePath, 'utf-8').toString('base64url');
+  const url = `music-tree-file://audio/${encoded}`;
+  console.log('[get-audio-url] Generated URL:', url.slice(0, 80));
+  return { success: true, data: url };
+});
+
+// Open a path in the system file manager
+ipcMain.handle('open-path-in-folder', async (_, folderPath) => {
+  if (!folderPath || !fs.existsSync(folderPath)) {
+    return { success: false, error: 'Folder does not exist' };
+  }
+  await shell.openPath(folderPath);
+  return { success: true };
+});
+
+// Get default download folder (used when no custom path is set)
+ipcMain.handle('get-default-download-path', () => {
+  const defaultPath = path.join(app.getPath('userData'), 'downloads');
+  return { success: true, data: defaultPath };
+});
+
 // Parse MP3 metadata
 ipcMain.handle('parse-audio-metadata', async (_, filePath) => {
   try {
@@ -520,8 +623,47 @@ ipcMain.handle('get-folder-audio-files', async (_, folderPath) => {
 function parseSpotifyTrack(t) {
   const track = t.track || t;
   const title = track.name || track.title || track.track;
-  const artist = track.artists?.[0]?.name ?? track.artist ?? (Array.isArray(track.artists) ? track.artists.map(a => a.name).join(', ') : null);
-  return title && artist ? { title, artist } : null;
+
+  let artist = null;
+  if (Array.isArray(track.artists) && track.artists.length > 0) {
+    artist = track.artists.map(a => (typeof a === 'string' ? a : a?.name)).filter(Boolean).join(', ');
+  }
+  if (!artist && typeof track.artist === 'string') artist = track.artist;
+  if (!artist && track.artist?.name) artist = track.artist.name;
+
+  // Return even without artist — YouTube search can still work with title alone
+  return title ? { title, artist: artist || null } : null;
+}
+
+function getSpotifyUrlType(url) {
+  if (url.includes('/track/') || url.includes('spotify:track:')) return 'track';
+  if (url.includes('/playlist/') || url.includes('spotify:playlist:')) return 'playlist';
+  if (url.includes('/album/') || url.includes('spotify:album:')) return 'album';
+  return 'unknown';
+}
+
+// Fallback: scrape Spotify oEmbed for basic title info
+async function spotifyOEmbedFallback(url) {
+  try {
+    const res = await net.fetch(`https://open.spotify.com/oembed?url=${encodeURIComponent(url)}`);
+    if (!res.ok) return null;
+    const data = await res.json();
+    // oEmbed title for tracks is typically the song title
+    return data.title ? { title: data.title, artist: null } : null;
+  } catch { return null; }
+}
+
+// Extract artist from a "Artist - Title" or similar pattern
+function parseArtistFromTitle(title) {
+  if (!title) return { title, artist: null };
+  const separators = [' - ', ' – ', ' — ', ' by '];
+  for (const sep of separators) {
+    const idx = title.indexOf(sep);
+    if (idx > 0) {
+      return { artist: title.slice(0, idx).trim(), title: title.slice(idx + sep.length).trim() };
+    }
+  }
+  return { title, artist: null };
 }
 
 function sendDownloadProgress(data) {
@@ -534,7 +676,11 @@ ipcMain.handle('download-from-url', async (_, { url, playlistName }) => {
   const logs = [];
   const push = (msg) => { logs.push(msg); sendDownloadProgress({ log: msg, logs: [...logs] }); };
   try {
-    const downloadsDir = path.join(app.getPath('userData'), 'downloads', Date.now().toString());
+    const settings = await prisma.settings.findUnique({ where: { id: 'default' } }).catch(() => null);
+    const baseDownloadPath = settings?.downloadFolderPath
+      ? path.resolve(settings.downloadFolderPath)
+      : path.join(app.getPath('userData'), 'downloads');
+    const downloadsDir = path.join(baseDownloadPath, Date.now().toString());
     fs.mkdirSync(downloadsDir, { recursive: true });
 
     const isSpotify = url.includes('spotify.com') || url.includes('spotify:');
@@ -544,9 +690,8 @@ ipcMain.handle('download-from-url', async (_, { url, playlistName }) => {
       return { success: false, error: 'Unrecognized URL. Only Spotify and SoundCloud links are supported.', logs };
     }
 
-    const outputTemplate = path.join(downloadsDir, '%(title)s.%(ext)s').replace(/\\/g, '/');
-    const ytdlOpts = {
-      output: outputTemplate,
+    const defaultOutputTemplate = path.join(downloadsDir, '%(title)s.%(ext)s').replace(/\\/g, '/');
+    const baseYtdlOpts = {
       extractAudio: true,
       audioFormat: 'mp3',
       noWarnings: true,
@@ -556,33 +701,95 @@ ipcMain.handle('download-from-url', async (_, { url, playlistName }) => {
 
     if (isSpotify) {
       push('Fetching Spotify track list...');
-      let trackList = [];
+      let queries = [];
+
+      // Strategy 1: getDetails (works for playlists, albums, and tracks)
       try {
         const details = await getDetails(url);
         let raw = details?.tracks ?? details;
-        trackList = Array.isArray(raw) ? raw : (raw?.items || raw?.tracks?.items || [raw]).flat();
-        if (trackList.length === 0 && details?.preview) {
-          trackList = [details.preview];
-        }
+        let trackList = Array.isArray(raw) ? raw : (raw?.items || raw?.tracks?.items || [raw]).flat();
+        if (trackList.length === 0 && details?.preview) trackList = [details.preview];
+        queries = trackList.map(parseSpotifyTrack).filter(Boolean);
+        if (queries.length > 0) push(`getDetails returned ${queries.length} track(s).`);
       } catch (e) {
-        push(`getDetails failed: ${e.message}. Trying getTracks...`);
-        trackList = await getTracks(url).catch(() => []);
+        push(`getDetails failed: ${e.message?.slice(0, 80)}`);
       }
-      const queries = trackList.map(parseSpotifyTrack).filter(Boolean);
+
+      // Strategy 2: getTracks
+      if (queries.length === 0) {
+        try {
+          push('Trying getTracks...');
+          const trackList = await getTracks(url);
+          queries = (trackList || []).map(parseSpotifyTrack).filter(Boolean);
+          if (queries.length > 0) push(`getTracks returned ${queries.length} track(s).`);
+        } catch (e) {
+          push(`getTracks failed: ${e.message?.slice(0, 80)}`);
+        }
+      }
+
+      // Strategy 3: getPreview (best for single tracks)
+      if (queries.length === 0) {
+        try {
+          push('Trying getPreview...');
+          const preview = await getPreview(url);
+          if (preview?.title) {
+            queries = [{ title: preview.title || preview.track, artist: preview.artist || null }];
+            push(`getPreview returned: ${preview.artist || '?'} - ${preview.title}`);
+          }
+        } catch (e) {
+          push(`getPreview failed: ${e.message?.slice(0, 80)}`);
+        }
+      }
+
+      // Strategy 4: getData (raw scrape)
+      if (queries.length === 0) {
+        try {
+          push('Trying getData...');
+          const raw = await getData(url);
+          if (raw?.name) {
+            const parsed = parseSpotifyTrack(raw);
+            if (parsed) queries = [parsed];
+          }
+        } catch (e) {
+          push(`getData failed: ${e.message?.slice(0, 80)}`);
+        }
+      }
+
+      // Strategy 5: oEmbed fallback (always available, no scraping)
+      if (queries.length === 0 && getSpotifyUrlType(url) === 'track') {
+        push('Trying Spotify oEmbed fallback...');
+        const oembed = await spotifyOEmbedFallback(url);
+        if (oembed) {
+          queries = [oembed];
+          push(`oEmbed returned title: ${oembed.title}`);
+        }
+      }
 
       if (queries.length === 0) {
-        return { success: false, error: 'Could not parse any tracks from Spotify URL. Make sure the link is a playlist, album, or track.', logs };
+        return { success: false, error: 'Could not parse any tracks from Spotify URL. Make sure the link is a valid playlist, album, or track.', logs };
       }
       push(`Found ${queries.length} track(s). Downloading from YouTube Music...`);
       sendDownloadProgress({ current: 0, total: queries.length, phase: 'download' });
 
       for (let i = 0; i < queries.length; i++) {
         const { title, artist } = queries[i];
-        const searchQuery = `ytsearch1:${artist} - ${title}`;
+        const searchQuery = artist
+          ? `ytsearch1:${artist} - ${title}`
+          : `ytsearch1:${title}`;
         sendDownloadProgress({ current: i, total: queries.length, phase: 'download' });
+        const safeName = `${sanitizeFilename(artist ? `${artist} - ${title}` : title)}.mp3`;
+        const trackOutputPath = path.join(downloadsDir, safeName);
+        const ytdlOpts = { ...baseYtdlOpts, output: trackOutputPath.replace(/\\/g, '/') };
         try {
-          push(`[${i + 1}/${queries.length}] ${artist} - ${title}`);
+          push(`[${i + 1}/${queries.length}] ${artist || '?'} - ${title}`);
           await youtubedl(searchQuery, ytdlOpts, { timeout: 120000 });
+          if (fs.existsSync(trackOutputPath)) {
+            try {
+              const tags = { title };
+              if (artist) tags.artist = artist;
+              NodeID3.write(tags, trackOutputPath);
+            } catch (_) { /* non-fatal */ }
+          }
         } catch (err) {
           push(`  Skip (not found): ${err.message?.slice(0, 80)}`);
         }
@@ -590,9 +797,9 @@ ipcMain.handle('download-from-url', async (_, { url, playlistName }) => {
       sendDownloadProgress({ current: queries.length, total: queries.length, phase: 'download' });
     } else {
       push('Downloading from SoundCloud...');
-      const scOutput = path.join(downloadsDir, '%(playlist_index)s - %(title)s.%(ext)s').replace(/\\/g, '/');
+      const scOutput = path.join(downloadsDir, '%(title)s.%(ext)s').replace(/\\/g, '/');
       try {
-        await youtubedl(url, { ...ytdlOpts, output: scOutput }, { timeout: 600000 });
+        await youtubedl(url, { ...baseYtdlOpts, output: scOutput, writeInfoJson: true }, { timeout: 600000 });
       } catch (err) {
         if (!fs.readdirSync(downloadsDir).some(f => ['.mp3', '.m4a', '.ogg'].includes(path.extname(f).toLowerCase()))) {
           return { success: false, error: `SoundCloud download failed: ${err.message}`, logs };
@@ -626,8 +833,42 @@ ipcMain.handle('download-from-url', async (_, { url, playlistName }) => {
         // Parse metadata
         const mm = await getMM();
         const metadata = await mm.parseFile(filePath);
-        const title = metadata.common.title || path.basename(filePath, path.extname(filePath));
-        const artist = metadata.common.artist || null;
+        let title = metadata.common.title || path.basename(filePath, path.extname(filePath));
+        let artist = metadata.common.artist || null;
+
+        // Failsafe chain for artist metadata
+        if (!artist) {
+          // Try yt-dlp info.json (SoundCloud sets uploader, artist, creator, channel)
+          const baseName = path.basename(fileName, path.extname(fileName));
+          const infoCandidates = [
+            path.join(result.downloadsDir, baseName + '.info.json'),
+            path.join(result.downloadsDir, fileName + '.info.json'),
+          ];
+          for (const infoPath of infoCandidates) {
+            if (!artist && fs.existsSync(infoPath)) {
+              try {
+                const info = JSON.parse(fs.readFileSync(infoPath, 'utf8'));
+                artist = info.artist || info.uploader || info.creator || info.channel || null;
+                if (!artist && info.track && info.track !== title) {
+                  // Sometimes yt-dlp puts "Artist - Title" in the track field
+                  const parsed = parseArtistFromTitle(info.track);
+                  if (parsed.artist) { artist = parsed.artist; title = parsed.title; }
+                }
+              } catch (_) { /* ignore parse errors */ }
+            }
+          }
+
+          // Try parsing "Artist - Title" from the filename or metadata title
+          if (!artist) {
+            const parsed = parseArtistFromTitle(title);
+            if (parsed.artist) { artist = parsed.artist; title = parsed.title; }
+          }
+
+          // Write recovered artist back into the MP3 ID3 tags
+          if (artist) {
+            try { NodeID3.write({ title, artist }, filePath); } catch (_) { /* non-fatal */ }
+          }
+        }
         const duration = metadata.format.duration || null;
         let bpm = null;
         let key = null;
@@ -675,31 +916,37 @@ ipcMain.handle('download-from-url', async (_, { url, playlistName }) => {
     }
 
     push(`Imported ${songCount} song(s) into playlist "${playlistName}"`);
-    return { success: true, songCount, logs };
+
+    if (songCount > 0 && mainWindow) {
+      new Notification({
+        title: 'Download complete',
+        body: `Music Tree: ${songCount} song(s) added to "${playlistName}".`
+      }).show();
+    }
+
+    return { success: true, songCount, logs, downloadsDir };
   } catch (error) {
     logs.push(`Error: ${error.message}`);
     return { success: false, error: error.message, logs };
   }
 });
 
-// --- BPM/Key Lookup via GetSongBPM API ---
+// --- BPM/Key Lookup via GetSongBPM API (optional, if API key is configured) ---
 
 ipcMain.handle('lookup-song-metadata', async (_, { title, artist }) => {
   try {
-    // Get API key from settings
     const settings = await prisma.settings.findUnique({ where: { id: 'default' } });
     const apiKey = settings?.getSongBpmApiKey;
     if (!apiKey) {
-      return { success: false, error: 'No API key configured. Add one in Settings.' };
+      // No API key — analysis is done locally in the renderer, so just return gracefully
+      return { success: false, error: 'no-api-key' };
     }
 
-    // Search using both song title and artist if available
-    let lookupQuery = encodeURIComponent(title);
     let searchUrl;
     if (artist) {
       searchUrl = `https://api.getsong.co/search/?api_key=${apiKey}&type=both&lookup=song:${encodeURIComponent(title)}+artist:${encodeURIComponent(artist)}`;
     } else {
-      searchUrl = `https://api.getsong.co/search/?api_key=${apiKey}&type=song&lookup=${lookupQuery}`;
+      searchUrl = `https://api.getsong.co/search/?api_key=${apiKey}&type=song&lookup=${encodeURIComponent(title)}`;
     }
 
     const searchRes = await fetch(searchUrl);
@@ -709,10 +956,7 @@ ipcMain.handle('lookup-song-metadata', async (_, { title, artist }) => {
       return { success: false, error: 'Song not found in database' };
     }
 
-    // Take the first result
     const match = searchData.search[0];
-
-    // Get full song details
     const songRes = await fetch(`https://api.getsong.co/song/?api_key=${apiKey}&id=${match.id}`);
     const songData = await songRes.json();
 
@@ -726,13 +970,7 @@ ipcMain.handle('lookup-song-metadata', async (_, { title, artist }) => {
 
     return {
       success: true,
-      data: {
-        bpm,
-        key: camelotKey,
-        rawKey: keyOf,
-        title: songData.song.title,
-        artist: songData.song.artist?.name || null
-      }
+      data: { bpm, key: camelotKey, rawKey: keyOf, title: songData.song.title, artist: songData.song.artist?.name || null }
     };
   } catch (error) {
     console.error('Error looking up song metadata:', error);
@@ -749,7 +987,7 @@ function convertToCamelot(musicalKey) {
   if (!musicalKey) return null;
   
   // If already in Camelot notation
-  if (/^[1-9]|1[0-2][AB]$/i.test(musicalKey)) {
+  if (/^(1[0-2]|[1-9])[AB]$/i.test(musicalKey)) {
     return musicalKey.toUpperCase();
   }
   

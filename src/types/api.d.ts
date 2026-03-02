@@ -54,6 +54,8 @@ interface Settings {
   showRecommendations: boolean;
   theme: string;
   lastImportPath: string | null;
+  getSongBpmApiKey?: string | null;
+  downloadFolderPath?: string | null;
 }
 
 interface SongMetadata {
@@ -97,8 +99,11 @@ interface ElectronAPI {
   getFolderAudioFiles: (folderPath: string) => Promise<ApiResponse<string[]> & { folderName?: string }>;
 
   // Download (Spotify/SoundCloud)
-  downloadFromUrl: (url: string, playlistName: string) => Promise<ApiResponse<{ songCount: number; logs: string[] }>>;
+  downloadFromUrl: (url: string, playlistName: string) => Promise<ApiResponse<{ songCount: number; logs: string[]; downloadsDir?: string }>>;
   onDownloadProgress: (callback: (data: { logs?: string[]; log?: string; phase?: string; current?: number; total?: number }) => void) => () => void;
+  getAudioUrl: (filePath: string) => Promise<ApiResponse<string>>;
+  openPathInFolder: (folderPath: string) => Promise<ApiResponse<void>>;
+  getDefaultDownloadPath: () => Promise<ApiResponse<string>>;
 }
 
 declare global {

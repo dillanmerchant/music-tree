@@ -1,18 +1,36 @@
 import { useState, useEffect } from 'react';
-import { X, Save, Sliders, Sparkles, Moon, Sun, Key, ExternalLink } from 'lucide-react';
+import { X, Save, Sliders, Sparkles, Moon, Sun, FolderOpen, FolderInput } from 'lucide-react';
 import useMusicStore from '../store/useMusicStore';
 
 export default function SettingsPanel() {
-  const { settings, setSettings, closeSettings, fetchSettings } = useMusicStore();
+  const { settings, setSettings, closeSettings, fetchSettings, isSettingsOpen } = useMusicStore();
 
   const [localSettings, setLocalSettings] = useState({
     bpmTolerance: settings.bpmTolerance || 5,
     showRecommendations: settings.showRecommendations ?? true,
     theme: settings.theme || 'dark',
-    getSongBpmApiKey: settings.getSongBpmApiKey || ''
+    downloadFolderPath: settings.downloadFolderPath ?? ''
   });
+  const [defaultDownloadPath, setDefaultDownloadPath] = useState('');
   const [isSaving, setIsSaving] = useState(false);
   const [hasChanges, setHasChanges] = useState(false);
+
+  useEffect(() => {
+    window.api.getDefaultDownloadPath?.().then((res) => {
+      if (res?.success && res.data) setDefaultDownloadPath(res.data);
+    });
+  }, []);
+
+  useEffect(() => {
+    if (isSettingsOpen) {
+      setLocalSettings({
+        bpmTolerance: settings.bpmTolerance || 5,
+        showRecommendations: settings.showRecommendations ?? true,
+        theme: settings.theme || 'dark',
+        downloadFolderPath: settings.downloadFolderPath ?? ''
+      });
+    }
+  }, [isSettingsOpen, settings.bpmTolerance, settings.showRecommendations, settings.theme, settings.downloadFolderPath]);
 
   // Track changes
   useEffect(() => {
@@ -20,16 +38,20 @@ export default function SettingsPanel() {
       localSettings.bpmTolerance !== settings.bpmTolerance ||
       localSettings.showRecommendations !== settings.showRecommendations ||
       localSettings.theme !== settings.theme ||
-      localSettings.getSongBpmApiKey !== (settings.getSongBpmApiKey || '');
+      (localSettings.downloadFolderPath || '') !== (settings.downloadFolderPath || '');
     setHasChanges(changed);
   }, [localSettings, settings]);
 
   const handleSave = async () => {
     setIsSaving(true);
     try {
-      const result = await window.api.updateSettings(localSettings);
+      const toSave = {
+        ...localSettings,
+        downloadFolderPath: localSettings.downloadFolderPath?.trim() || null
+      };
+      const result = await window.api.updateSettings(toSave);
       if (result.success) {
-        setSettings(localSettings);
+        setSettings(toSave);
         closeSettings();
       }
     } catch (error) {
@@ -44,9 +66,21 @@ export default function SettingsPanel() {
       bpmTolerance: settings.bpmTolerance || 5,
       showRecommendations: settings.showRecommendations ?? true,
       theme: settings.theme || 'dark',
-      getSongBpmApiKey: settings.getSongBpmApiKey || ''
+      downloadFolderPath: settings.downloadFolderPath ?? ''
     });
     closeSettings();
+  };
+
+  const handleSelectDownloadFolder = async () => {
+    const result = await window.api.openFolderDialog?.();
+    if (result?.success && result.data) {
+      setLocalSettings((prev) => ({ ...prev, downloadFolderPath: result.data }));
+    }
+  };
+
+  const handleOpenDownloadFolder = () => {
+    const path = localSettings.downloadFolderPath || defaultDownloadPath;
+    if (path) window.api.openPathInFolder?.(path);
   };
 
   return (
@@ -77,36 +111,64 @@ export default function SettingsPanel() {
 
         {/* Settings Content */}
         <div className="p-6 space-y-8">
-          {/* BPM/Key Lookup API */}
+          {/* Download location */}
           <section>
             <h3 className="text-sm font-medium text-white mb-4 flex items-center gap-2">
-              <Key size={16} className="text-primary" />
-              BPM & Key Lookup
+              <FolderOpen size={16} className="text-primary" />
+              Download location
             </h3>
-            
             <div className="bg-background rounded-lg p-4 space-y-3">
-              <div>
-                <label className="text-sm text-gray-300">GetSongBPM API Key</label>
-                <p className="text-xs text-gray-500 mt-0.5 mb-2">
-                  Automatically fetch BPM and key for songs when metadata is missing.
-                  Get a free API key from{' '}
-                  <span className="text-primary">getsongbpm.com/api</span>
-                </p>
-                <input
-                  type="text"
-                  value={localSettings.getSongBpmApiKey}
-                  onChange={(e) => setLocalSettings(prev => ({
-                    ...prev,
-                    getSongBpmApiKey: e.target.value.trim()
-                  }))}
-                  placeholder="Enter your API key..."
-                  className="w-full bg-surface border border-border rounded-lg px-3 py-2
-                    text-sm text-white placeholder-gray-500 focus:outline-none focus:border-primary"
-                />
-              </div>
               <p className="text-xs text-gray-500">
-                When enabled, songs without BPM/Key metadata will be looked up automatically on import.
-                You can also manually trigger lookups from the song library.
+                Folder where Spotify and SoundCloud downloads are saved. Leave empty to use the default app folder.
+              </p>
+              {/* File path displayed prominently above the buttons */}
+              <div className="bg-surface rounded-lg px-3 py-2 border border-border">
+                <p className="text-xs text-gray-500 mb-0.5">Current path</p>
+                <p className="text-sm text-gray-200 break-all select-all">
+                  {localSettings.downloadFolderPath || defaultDownloadPath || 'Default (app data)'}
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleSelectDownloadFolder}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm bg-surface-hover text-gray-300 hover:text-white"
+                >
+                  <FolderInput size={14} />
+                  Change
+                </button>
+                <button
+                  type="button"
+                  onClick={handleOpenDownloadFolder}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm bg-surface-hover text-gray-300 hover:text-white"
+                >
+                  <FolderOpen size={14} />
+                  Open folder
+                </button>
+                {localSettings.downloadFolderPath && (
+                  <button
+                    type="button"
+                    onClick={() => setLocalSettings(prev => ({ ...prev, downloadFolderPath: '' }))}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm text-gray-500 hover:text-white hover:bg-surface-hover"
+                  >
+                    Reset to default
+                  </button>
+                )}
+              </div>
+            </div>
+          </section>
+
+          {/* BPM & Key Detection */}
+          <section>
+            <h3 className="text-sm font-medium text-white mb-4 flex items-center gap-2">
+              <Sparkles size={16} className="text-primary" />
+              BPM & Key Detection
+            </h3>
+            <div className="bg-background rounded-lg p-4">
+              <p className="text-sm text-gray-300 mb-1">Local Audio Analysis</p>
+              <p className="text-xs text-gray-500">
+                BPM and musical key are detected automatically using local audio analysis when songs are imported or downloaded.
+                No API key or external service required.
               </p>
             </div>
           </section>

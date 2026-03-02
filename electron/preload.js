@@ -97,6 +97,13 @@ contextBridge.exposeInMainWorld('api', {
     return () => ipcRenderer.removeListener('download-progress', handler);
   },
 
+  // Get playable URL for local audio (custom protocol)
+  getAudioUrl: (filePath) => ipcRenderer.invoke('get-audio-url', filePath),
+  // Open folder in system file manager
+  openPathInFolder: (folderPath) => ipcRenderer.invoke('open-path-in-folder', folderPath),
+  // Get default download folder path
+  getDefaultDownloadPath: () => ipcRenderer.invoke('get-default-download-path'),
+
   // ============================================
   // Metadata Lookup (GetSongBPM API)
   // ============================================

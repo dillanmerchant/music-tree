@@ -1,6 +1,7 @@
 import { useState } from 'react';
-import { X, Download, Music, Loader2, CheckCircle, AlertCircle } from 'lucide-react';
+import { X, Download, Music, Loader2, CheckCircle, AlertCircle, FolderOpen } from 'lucide-react';
 import useMusicStore from '../../store/useMusicStore';
+import { analyzeAndUpdateSong } from '../../utils/audioAnalysis';
 
 export default function DownloadModal() {
   const { closeDownloadModal, fetchSongs, fetchPlaylists } = useMusicStore();
@@ -11,6 +12,7 @@ export default function DownloadModal() {
   const [status, setStatus] = useState(null);
   const [logs, setLogs] = useState([]);
   const [progress, setProgress] = useState(null); // { current, total, phase }
+  const [downloadsDir, setDownloadsDir] = useState(null); // folder path when download completes
 
   const detectPlatform = (inputUrl) => {
     if (inputUrl.includes('spotify.com') || inputUrl.includes('spotify:')) return 'spotify';
@@ -27,6 +29,7 @@ export default function DownloadModal() {
     setStatus(null);
     setLogs([]);
     setProgress(null);
+    setDownloadsDir(null);
 
     const unsubscribe = window.api.onDownloadProgress?.((data) => {
       if (data.logs) setLogs(data.logs);
@@ -39,8 +42,18 @@ export default function DownloadModal() {
       if (result.success) {
         setStatus({ type: 'success', message: `Downloaded ${result.songCount} song(s) into "${playlistName}"` });
         setLogs(result.logs || []);
+        if (result.downloadsDir) setDownloadsDir(result.downloadsDir);
         await fetchSongs();
         await fetchPlaylists();
+
+        // Analyze BPM/key locally for newly imported songs missing metadata
+        const allSongs = useMusicStore.getState().songs;
+        const needAnalysis = allSongs.filter(s => !s.bpm || !s.key);
+        for (const song of needAnalysis) {
+          analyzeAndUpdateSong(song).then(updates => {
+            if (updates) useMusicStore.getState().updateSong(song.id, updates);
+          });
+        }
       } else {
         setStatus({ type: 'error', message: result.error });
         setLogs(result.logs || []);
@@ -133,10 +146,21 @@ export default function DownloadModal() {
 
           {/* Status */}
           {status && (
-            <div className={`flex items-start gap-3 p-3 rounded-lg text-sm
-              ${status.type === 'success' ? 'bg-green-500/10 text-green-400' : 'bg-red-500/10 text-red-400'}`}>
-              {status.type === 'success' ? <CheckCircle size={18} className="flex-shrink-0 mt-0.5" /> : <AlertCircle size={18} className="flex-shrink-0 mt-0.5" />}
-              <span>{status.message}</span>
+            <div className={`flex flex-col gap-2 ${status.type === 'success' ? 'bg-green-500/10 text-green-400' : 'bg-red-500/10 text-red-400'} p-3 rounded-lg text-sm`}>
+              <div className="flex items-start gap-3">
+                {status.type === 'success' ? <CheckCircle size={18} className="flex-shrink-0 mt-0.5" /> : <AlertCircle size={18} className="flex-shrink-0 mt-0.5" />}
+                <span>{status.message}</span>
+              </div>
+              {status.type === 'success' && downloadsDir && (
+                <button
+                  type="button"
+                  onClick={() => window.api.openPathInFolder?.(downloadsDir)}
+                  className="flex items-center gap-2 text-left text-xs text-green-300 hover:text-green-200 mt-1"
+                >
+                  <FolderOpen size={14} />
+                  Open download folder
+                </button>
+              )}
             </div>
           )}
 

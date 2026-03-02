@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
-import { MoreVertical, Link2, ListPlus, Trash2, Play, Pause } from 'lucide-react';
+import { MoreVertical, Link2, ListPlus, Trash2, Play, Pause, RefreshCw } from 'lucide-react';
 import useMusicStore from '../store/useMusicStore';
+import { forceAnalyzeSong } from '../utils/audioAnalysis';
 
 export default function SongCard({ song, compact = false }) {
   const { 
@@ -16,6 +17,7 @@ export default function SongCard({ song, compact = false }) {
   } = useMusicStore();
 
   const [menuOpen, setMenuOpen] = useState(false);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
   const menuRef = useRef(null);
 
   const isActive = activeSong?.id === song.id;
@@ -71,6 +73,19 @@ export default function SongCard({ song, compact = false }) {
     setMenuOpen(false);
   };
 
+  const handleReanalyze = async () => {
+    setMenuOpen(false);
+    setIsAnalyzing(true);
+    try {
+      const updates = await forceAnalyzeSong(song);
+      if (updates) {
+        useMusicStore.getState().updateSong(song.id, updates);
+      }
+    } finally {
+      setIsAnalyzing(false);
+    }
+  };
+
   // Format BPM display
   const formatBpm = (bpm) => {
     if (!bpm) return '--';
@@ -108,14 +123,23 @@ export default function SongCard({ song, compact = false }) {
 
       {/* Metadata Tags */}
       <div className="flex items-center gap-2 text-xs">
-        {song.key && (
-          <span className="px-2 py-0.5 rounded bg-primary/20 text-primary font-mono">
-            {song.key}
+        {isAnalyzing ? (
+          <span className="flex items-center gap-1 text-gray-500">
+            <RefreshCw size={12} className="animate-spin" />
+            <span className="text-xs">analyzing</span>
           </span>
+        ) : (
+          <>
+            {song.key && (
+              <span className="px-2 py-0.5 rounded bg-primary/20 text-primary font-mono">
+                {song.key}
+              </span>
+            )}
+            <span className="text-gray-500 font-mono w-12 text-right">
+              {formatBpm(song.bpm)} bpm
+            </span>
+          </>
         )}
-        <span className="text-gray-500 font-mono w-12 text-right">
-          {formatBpm(song.bpm)} bpm
-        </span>
       </div>
 
       {/* 3-dot Menu Button */}
@@ -156,6 +180,17 @@ export default function SongCard({ song, compact = false }) {
             >
               <ListPlus size={16} />
               <span>Add to Playlist</span>
+            </button>
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                handleReanalyze();
+              }}
+              className="w-full flex items-center gap-3 px-4 py-2 text-sm text-gray-300 
+                hover:bg-surface-hover hover:text-white"
+            >
+              <RefreshCw size={16} className={isAnalyzing ? 'animate-spin' : ''} />
+              <span>{isAnalyzing ? 'Analyzing...' : 'Re-analyze BPM/Key'}</span>
             </button>
             <div className="border-t border-border my-1" />
             <button

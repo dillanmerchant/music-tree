@@ -84,4 +84,5 @@ model Settings {
   theme                   String  @default("dark")
   lastImportPath          String?
   getSongBpmApiKey        String? // API key for getsongbpm.com BPM/Key lookups
+  downloadFolderPath      String? // Custom folder for Spotify/SoundCloud downloads; null = app userData/downloads
 }

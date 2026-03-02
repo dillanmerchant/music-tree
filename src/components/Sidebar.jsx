@@ -7,10 +7,13 @@ import {
   ListMusic, 
   ChevronRight,
   ChevronDown,
-  Download 
+  Download,
+  Search,
+  X
 } from 'lucide-react';
 import useMusicStore from '../store/useMusicStore';
 import SongCard from './SongCard';
+import { analyzeAndUpdateSong } from '../utils/audioAnalysis';
 
 export default function Sidebar() {
   const { 
@@ -29,29 +32,36 @@ export default function Sidebar() {
   const [playlistsExpanded, setPlaylistsExpanded] = useState(true);
   const [isCreatingPlaylist, setIsCreatingPlaylist] = useState(false);
   const [newPlaylistName, setNewPlaylistName] = useState('');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchVisible, setSearchVisible] = useState(false);
+  const [playlistSearchQuery, setPlaylistSearchQuery] = useState('');
+  const [playlistSearchVisible, setPlaylistSearchVisible] = useState(false);
 
-  // Get songs to display based on active playlist
-  const displaySongs = activePlaylist 
+  // Get songs to display based on active playlist, then filter by search
+  const baseSongs = activePlaylist 
     ? activePlaylist.songs.map(ps => ps.song)
     : songs;
 
-  // Try to look up BPM/Key from API if missing from file metadata
-  const tryLookupMetadata = async (song) => {
-    if (song.bpm && song.key) return; // already has both
-    try {
-      const lookup = await window.api.lookupSongMetadata(song.title, song.artist);
-      if (lookup.success && lookup.data) {
-        const updates = {};
-        if (!song.bpm && lookup.data.bpm) updates.bpm = lookup.data.bpm;
-        if (!song.key && lookup.data.key) updates.key = lookup.data.key;
-        if (Object.keys(updates).length > 0) {
-          await window.api.updateSong(song.id, updates);
-        }
+  const displaySongs = searchQuery.trim()
+    ? baseSongs.filter(song => {
+        const q = searchQuery.toLowerCase();
+        return (
+          (song.title && song.title.toLowerCase().includes(q)) ||
+          (song.artist && song.artist.toLowerCase().includes(q)) ||
+          (song.key && song.key.toLowerCase().includes(q)) ||
+          (song.bpm && String(Math.round(song.bpm)).includes(q))
+        );
+      })
+    : baseSongs;
+
+  // Run local BPM/key analysis for songs missing metadata
+  const tryAnalyzeSong = (song) => {
+    if (song.bpm && song.key) return;
+    analyzeAndUpdateSong(song).then(updates => {
+      if (updates) {
+        useMusicStore.getState().updateSong(song.id, updates);
       }
-    } catch (err) {
-      // Silently fail - API lookup is best-effort
-      console.log('API lookup skipped or failed for:', song.title);
-    }
+    });
   };
 
   // Handle adding songs from file dialog
@@ -69,12 +79,12 @@ export default function Sidebar() {
         const dbResult = await window.api.addNewSong(songData);
         if (dbResult.success) {
           addSong(dbResult.data);
-          // Try API lookup in background for missing metadata
-          tryLookupMetadata(dbResult.data);
+          // Analyze BPM/key locally in background
+          tryAnalyzeSong(dbResult.data);
         }
       }
-      // Refresh songs after all lookups may have updated DB
-      setTimeout(() => fetchSongs(), 2000);
+      // Refresh songs after analysis may have updated DB
+      setTimeout(() => fetchSongs(), 3000);
     } catch (error) {
       console.error('Error adding songs:', error);
     }
@@ -106,11 +116,13 @@ export default function Sidebar() {
 
         if (existingSong) {
           songId = existingSong.id;
+          tryAnalyzeSong(existingSong);
         } else {
           const dbResult = await window.api.addNewSong(songData);
           if (dbResult.success) {
             addSong(dbResult.data);
             songId = dbResult.data.id;
+            tryAnalyzeSong(dbResult.data);
           }
         }
 
@@ -179,18 +191,55 @@ export default function Sidebar() {
               <ChevronRight size={16} className="text-gray-400" />
             )}
           </button>
-          <button
-            type="button"
-            onClick={() => setIsCreatingPlaylist(true)}
-            className="p-1 rounded hover:bg-border text-gray-400 hover:text-white"
-            title="New playlist"
-          >
-            <Plus size={16} />
-          </button>
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              onClick={() => { setPlaylistSearchVisible(!playlistSearchVisible); setPlaylistSearchQuery(''); }}
+              className={`p-1 rounded hover:bg-border hover:text-white
+                ${playlistSearchVisible ? 'text-primary bg-border' : 'text-gray-400'}`}
+              title="Search playlists"
+            >
+              <Search size={14} />
+            </button>
+            <button
+              type="button"
+              onClick={() => setIsCreatingPlaylist(true)}
+              className="p-1 rounded hover:bg-border text-gray-400 hover:text-white"
+              title="New playlist"
+            >
+              <Plus size={16} />
+            </button>
+          </div>
         </div>
 
         {playlistsExpanded && (
           <div className="pb-2">
+            {/* Playlist Search */}
+            {playlistSearchVisible && (
+              <div className="px-3 py-1.5">
+                <div className="relative">
+                  <Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-500" />
+                  <input
+                    type="text"
+                    value={playlistSearchQuery}
+                    onChange={(e) => setPlaylistSearchQuery(e.target.value)}
+                    placeholder="Search playlists..."
+                    autoFocus
+                    className="w-full bg-background border border-border rounded-lg pl-7 pr-7 py-1 text-xs
+                      text-white placeholder-gray-500 focus:outline-none focus:border-primary"
+                  />
+                  {playlistSearchQuery && (
+                    <button
+                      onClick={() => setPlaylistSearchQuery('')}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-500 hover:text-white"
+                    >
+                      <X size={12} />
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
+
             {/* All Songs option */}
             <button
               onClick={() => setActivePlaylist(null)}
@@ -202,8 +251,10 @@ export default function Sidebar() {
               <span className="ml-auto text-xs text-gray-500">{songs.length}</span>
             </button>
 
-            {/* Playlist list */}
-            {playlists.map((playlist) => (
+            {/* Playlist list (filtered by search) */}
+            {playlists
+              .filter(pl => !playlistSearchQuery.trim() || pl.name.toLowerCase().includes(playlistSearchQuery.toLowerCase()))
+              .map((playlist) => (
               <button
                 key={playlist.id}
                 onClick={() => setActivePlaylist(playlist)}
@@ -215,6 +266,11 @@ export default function Sidebar() {
                 <span className="ml-auto text-xs text-gray-500">{playlist.songs?.length || 0}</span>
               </button>
             ))}
+
+            {/* No results message */}
+            {playlistSearchQuery.trim() && playlists.filter(pl => pl.name.toLowerCase().includes(playlistSearchQuery.toLowerCase())).length === 0 && (
+              <p className="px-4 py-2 text-xs text-gray-500">No playlists match</p>
+            )}
 
             {/* New playlist input */}
             {isCreatingPlaylist && (
@@ -256,6 +312,14 @@ export default function Sidebar() {
           </span>
           <div className="flex items-center gap-1">
             <button
+              onClick={() => { setSearchVisible(!searchVisible); setSearchQuery(''); }}
+              className={`p-1.5 rounded hover:bg-surface-hover hover:text-white
+                ${searchVisible ? 'text-primary bg-surface-hover' : 'text-gray-400'}`}
+              title="Search songs"
+            >
+              <Search size={16} />
+            </button>
+            <button
               onClick={handleAddSongs}
               className="p-1.5 rounded hover:bg-surface-hover text-gray-400 hover:text-white"
               title="Add Songs"
@@ -271,6 +335,37 @@ export default function Sidebar() {
             </button>
           </div>
         </div>
+
+        {/* Search Bar */}
+        {searchVisible && (
+          <div className="px-3 py-2 border-b border-border">
+            <div className="relative">
+              <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-500" />
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Search by title, artist, key, BPM..."
+                autoFocus
+                className="w-full bg-background border border-border rounded-lg pl-8 pr-8 py-1.5 text-sm
+                  text-white placeholder-gray-500 focus:outline-none focus:border-primary"
+              />
+              {searchQuery && (
+                <button
+                  onClick={() => setSearchQuery('')}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-500 hover:text-white"
+                >
+                  <X size={14} />
+                </button>
+              )}
+            </div>
+            {searchQuery.trim() && (
+              <p className="text-xs text-gray-500 mt-1 px-1">
+                {displaySongs.length} result{displaySongs.length !== 1 ? 's' : ''}
+              </p>
+            )}
+          </div>
+        )}
 
         {/* Song List */}
         <div className="flex-1 overflow-y-auto">

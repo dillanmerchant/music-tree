@@ -9,40 +9,70 @@ export default function AudioPlayer() {
   const [duration, setDuration] = useState(0);
   const [volume, setVolume] = useState(0.8);
   const [isMuted, setIsMuted] = useState(false);
+  const [playbackError, setPlaybackError] = useState(null);
 
-  // Handle play/pause state changes
+  // Handle play/pause state changes (only play when we have a source)
   useEffect(() => {
     const audio = audioRef.current;
     if (!audio) return;
 
     if (isPlaying) {
-      audio.play().catch((err) => {
-        console.error('Audio play failed:', err);
-        pauseSong();
-      });
+      if (audio.src) {
+        console.log('[AudioPlayer] Attempting play, src:', audio.src.slice(0, 80));
+        audio.play().catch((err) => {
+          console.error('[AudioPlayer] play() rejected:', err.name, err.message);
+          pauseSong();
+        });
+      } else {
+        console.log('[AudioPlayer] isPlaying=true but no src yet');
+      }
     } else {
       audio.pause();
     }
   }, [isPlaying, pauseSong]);
 
-  // Handle song change
+  // Handle song change: resolve playable URL via main process (custom protocol)
   useEffect(() => {
     const audio = audioRef.current;
     if (!audio || !currentlyPlaying) return;
 
-    // Use file:// protocol for local files
-    const filePath = currentlyPlaying.filePath;
-    audio.src = `file://${filePath}`;
-    audio.volume = isMuted ? 0 : volume;
-    setCurrentTime(0);
+    setPlaybackError(null);
+    console.log('[AudioPlayer] Song changed:', currentlyPlaying.title, '| filePath:', currentlyPlaying.filePath);
 
-    if (isPlaying) {
-      audio.play().catch((err) => {
-        console.error('Audio play failed:', err);
-        pauseSong();
-      });
-    }
-  }, [currentlyPlaying?.id]);
+    let cancelled = false;
+    window.api.getAudioUrl(currentlyPlaying.filePath).then((res) => {
+      if (cancelled || !audioRef.current) return;
+      console.log('[AudioPlayer] getAudioUrl response:', res.success, res.error || '', res.data?.slice(0, 80));
+      if (res.success && res.data) {
+        audio.volume = isMuted ? 0 : volume;
+        setCurrentTime(0);
+        setDuration(0);
+        const playWhenReady = () => {
+          if (cancelled || !audioRef.current) return;
+          console.log('[AudioPlayer] canplay fired, readyState:', audio.readyState, 'isPlaying:', useMusicStore.getState().isPlaying);
+          if (useMusicStore.getState().isPlaying) {
+            audio.play().catch((err) => {
+              console.error('[AudioPlayer] play() after canplay failed:', err.name, err.message);
+              setPlaybackError(err.message);
+              pauseSong();
+            });
+          }
+        };
+        audio.addEventListener('canplay', playWhenReady, { once: true });
+        console.log('[AudioPlayer] Setting audio.src to:', res.data.slice(0, 80));
+        audio.src = res.data;
+        audio.load();
+        if (audio.readyState >= 2) playWhenReady();
+      } else {
+        console.error('[AudioPlayer] getAudioUrl failed:', res.error);
+        setPlaybackError(res.error || 'Failed to get audio URL');
+      }
+    }).catch(err => {
+      console.error('[AudioPlayer] getAudioUrl IPC error:', err);
+      setPlaybackError(err.message);
+    });
+    return () => { cancelled = true; };
+  }, [currentlyPlaying?.id, pauseSong]);
 
   // Update volume
   useEffect(() => {
@@ -65,6 +95,17 @@ export default function AudioPlayer() {
 
   const handleEnded = () => {
     stopSong();
+  };
+
+  const handleError = (e) => {
+    const audio = audioRef.current;
+    const mediaError = audio?.error;
+    const codes = { 1: 'MEDIA_ERR_ABORTED', 2: 'MEDIA_ERR_NETWORK', 3: 'MEDIA_ERR_DECODE', 4: 'MEDIA_ERR_SRC_NOT_SUPPORTED' };
+    const errMsg = mediaError
+      ? `${codes[mediaError.code] || mediaError.code}: ${mediaError.message || 'unknown'}`
+      : 'Unknown audio error';
+    console.error('[AudioPlayer] <audio> error event:', errMsg, '| src:', audio?.src?.slice(0, 80));
+    setPlaybackError(errMsg);
   };
 
   const handleSeek = (e) => {
@@ -91,12 +132,15 @@ export default function AudioPlayer() {
         onTimeUpdate={handleTimeUpdate}
         onLoadedMetadata={handleLoadedMetadata}
         onEnded={handleEnded}
+        onError={handleError}
       />
       <div className="fixed bottom-0 left-0 right-0 h-16 bg-surface border-t border-border z-30 flex items-center px-4 gap-4">
         {/* Song Info */}
         <div className="w-56 flex-shrink-0 min-w-0">
           <p className="text-sm font-medium text-white truncate">{currentlyPlaying.title}</p>
-          <p className="text-xs text-gray-500 truncate">{currentlyPlaying.artist || 'Unknown Artist'}</p>
+          <p className={`text-xs truncate ${playbackError ? 'text-red-400' : 'text-gray-500'}`}>
+            {playbackError || currentlyPlaying.artist || 'Unknown Artist'}
+          </p>
         </div>
 
         {/* Play Controls */}
