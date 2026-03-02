@@ -8,8 +8,9 @@ export default function DownloadModal() {
   const [url, setUrl] = useState('');
   const [playlistName, setPlaylistName] = useState('');
   const [isDownloading, setIsDownloading] = useState(false);
-  const [status, setStatus] = useState(null); // { type: 'success'|'error', message: string }
+  const [status, setStatus] = useState(null);
   const [logs, setLogs] = useState([]);
+  const [progress, setProgress] = useState(null); // { current, total, phase }
 
   const detectPlatform = (inputUrl) => {
     if (inputUrl.includes('spotify.com') || inputUrl.includes('spotify:')) return 'spotify';
@@ -25,6 +26,12 @@ export default function DownloadModal() {
     setIsDownloading(true);
     setStatus(null);
     setLogs([]);
+    setProgress(null);
+
+    const unsubscribe = window.api.onDownloadProgress?.((data) => {
+      if (data.logs) setLogs(data.logs);
+      if (data.phase !== undefined) setProgress({ current: data.current ?? 0, total: data.total ?? 0, phase: data.phase });
+    });
 
     try {
       const result = await window.api.downloadFromUrl(url.trim(), playlistName.trim());
@@ -32,7 +39,6 @@ export default function DownloadModal() {
       if (result.success) {
         setStatus({ type: 'success', message: `Downloaded ${result.songCount} song(s) into "${playlistName}"` });
         setLogs(result.logs || []);
-        // Refresh data
         await fetchSongs();
         await fetchPlaylists();
       } else {
@@ -42,7 +48,9 @@ export default function DownloadModal() {
     } catch (error) {
       setStatus({ type: 'error', message: error.message });
     } finally {
+      unsubscribe?.();
       setIsDownloading(false);
+      setProgress(null);
     }
   };
 
@@ -107,6 +115,22 @@ export default function DownloadModal() {
             )}
           </div>
 
+          {/* Progress during download */}
+          {isDownloading && progress?.total > 0 && (
+            <div className="bg-background rounded-lg p-3">
+              <div className="flex justify-between text-xs text-gray-400 mb-1">
+                <span>{progress.phase === 'download' ? 'Downloading...' : 'Importing...'}</span>
+                <span>{progress.current} / {progress.total}</span>
+              </div>
+              <div className="h-1.5 bg-surface-hover rounded-full overflow-hidden">
+                <div 
+                  className="h-full bg-primary transition-all duration-300" 
+                  style={{ width: `${progress.total ? (progress.current / progress.total) * 100 : 0}%` }} 
+                />
+              </div>
+            </div>
+          )}
+
           {/* Status */}
           {status && (
             <div className={`flex items-start gap-3 p-3 rounded-lg text-sm
@@ -116,24 +140,18 @@ export default function DownloadModal() {
             </div>
           )}
 
-          {/* Download Logs */}
-          {logs.length > 0 && (
+          {/* Download Logs - show during download or when complete */}
+          {(logs.length > 0 || isDownloading) && (
             <div className="bg-background rounded-lg p-3 max-h-40 overflow-y-auto">
-              <p className="text-xs text-gray-500 mb-2">Download Log:</p>
-              {logs.map((log, i) => (
+              <p className="text-xs text-gray-500 mb-2">Progress:</p>
+              {logs.length > 0 ? logs.map((log, i) => (
                 <p key={i} className="text-xs text-gray-400 font-mono leading-relaxed">{log}</p>
-              ))}
+              )) : (
+                <p className="text-xs text-gray-500 italic">Starting...</p>
+              )}
             </div>
           )}
 
-          {/* Requirements note */}
-          <div className="bg-background/50 rounded-lg p-3">
-            <p className="text-xs text-gray-500">
-              <strong className="text-gray-400">Requirements:</strong> Python 3 must be installed.
-              For Spotify: <code className="text-primary">pip install spotdl</code> |
-              For SoundCloud: <code className="text-primary">pip install scdl</code>
-            </p>
-          </div>
         </div>
 
         {/* Footer */}

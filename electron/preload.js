@@ -90,6 +90,13 @@ contextBridge.exposeInMainWorld('api', {
   // Download songs from a URL (Spotify or SoundCloud)
   downloadFromUrl: (url, playlistName) => ipcRenderer.invoke('download-from-url', { url, playlistName }),
 
+  // Subscribe to download progress updates (returns unsubscribe function)
+  onDownloadProgress: (callback) => {
+    const handler = (_, data) => callback(data);
+    ipcRenderer.on('download-progress', handler);
+    return () => ipcRenderer.removeListener('download-progress', handler);
+  },
+
   // ============================================
   // Metadata Lookup (GetSongBPM API)
   // ============================================

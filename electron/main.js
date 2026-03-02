@@ -1,9 +1,18 @@
 const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const path = require('path');
 const { PrismaClient } = require('@prisma/client');
-const mm = require('music-metadata');
 const fs = require('fs');
-const { execFile } = require('child_process');
+const { execSync } = require('child_process');
+const youtubedl = require('youtube-dl-exec');
+const { getTracks, getDetails } = require('spotify-url-info')(fetch);
+
+let mm;
+async function getMM() {
+    if (!mm) {
+        mm = await import('music-metadata');
+    }
+    return mm;
+}
 
 // Prisma client will be initialized when app is ready
 let prisma;
@@ -62,14 +71,36 @@ app.whenReady().then(async () => {
     console.log('Database connected successfully');
     
     // Initialize default settings if they don't exist
-    const settings = await prisma.settings.findUnique({ where: { id: 'default' } });
+    let settings = await prisma.settings.findUnique({ where: { id: 'default' } });
     if (!settings) {
       await prisma.settings.create({
         data: { id: 'default' }
       });
     }
   } catch (error) {
-    console.error('Database connection error:', error);
+    // P2021 = table doesn't exist - run schema migration and retry
+    if (error.code === 'P2021') {
+      try {
+        const dbPath = path.join(app.getPath('userData'), 'music-tree.db');
+        const cwd = path.join(__dirname, '..');
+        execSync('npx prisma db push', {
+          env: { ...process.env, DATABASE_URL: `file:${dbPath}` },
+          stdio: 'pipe',
+          cwd
+        });
+        console.log('Database schema applied successfully');
+        await prisma.$connect();
+        const settings = await prisma.settings.findUnique({ where: { id: 'default' } });
+        if (!settings) {
+          await prisma.settings.create({ data: { id: 'default' } });
+        }
+      } catch (pushError) {
+        console.error('Failed to apply database schema:', pushError);
+        throw error;
+      }
+    } else {
+      console.error('Database connection error:', error);
+    }
   }
 
   createWindow();
@@ -403,6 +434,7 @@ ipcMain.handle('open-folder-dialog', async () => {
 // Parse MP3 metadata
 ipcMain.handle('parse-audio-metadata', async (_, filePath) => {
   try {
+    const mm = await getMM();
     const metadata = await mm.parseFile(filePath);
     
     // Extract common metadata
@@ -483,11 +515,25 @@ ipcMain.handle('get-folder-audio-files', async (_, folderPath) => {
 });
 
 // --- Download from Spotify/SoundCloud ---
+// Uses youtube-dl-exec (bundles yt-dlp) + spotify-url-info - no Python required
+
+function parseSpotifyTrack(t) {
+  const track = t.track || t;
+  const title = track.name || track.title || track.track;
+  const artist = track.artists?.[0]?.name ?? track.artist ?? (Array.isArray(track.artists) ? track.artists.map(a => a.name).join(', ') : null);
+  return title && artist ? { title, artist } : null;
+}
+
+function sendDownloadProgress(data) {
+  if (mainWindow?.webContents) {
+    mainWindow.webContents.send('download-progress', data);
+  }
+}
 
 ipcMain.handle('download-from-url', async (_, { url, playlistName }) => {
   const logs = [];
+  const push = (msg) => { logs.push(msg); sendDownloadProgress({ log: msg, logs: [...logs] }); };
   try {
-    // Create a downloads directory in userData
     const downloadsDir = path.join(app.getPath('userData'), 'downloads', Date.now().toString());
     fs.mkdirSync(downloadsDir, { recursive: true });
 
@@ -498,57 +544,73 @@ ipcMain.handle('download-from-url', async (_, { url, playlistName }) => {
       return { success: false, error: 'Unrecognized URL. Only Spotify and SoundCloud links are supported.', logs };
     }
 
-    // Run the download command
-    const result = await new Promise((resolve, reject) => {
-      let command, args;
+    const outputTemplate = path.join(downloadsDir, '%(title)s.%(ext)s').replace(/\\/g, '/');
+    const ytdlOpts = {
+      output: outputTemplate,
+      extractAudio: true,
+      audioFormat: 'mp3',
+      noWarnings: true,
+      noCheckCertificates: true,
+      addHeader: ['referer:youtube.com', 'user-agent:Mozilla/5.0 (Windows NT 10.0; rv:91.0) Gecko/20100101 Firefox/91.0']
+    };
 
-      if (isSpotify) {
-        // spotdl: download to specific output directory
-        command = 'spotdl';
-        args = ['download', url, '--output', downloadsDir, '--format', 'mp3'];
-      } else {
-        // scdl: download to specific path
-        command = 'scdl';
-        args = ['-l', url, '--path', downloadsDir, '--onlymp3'];
-      }
-
-      logs.push(`Running: ${command} ${args.join(' ')}`);
-
-      const child = execFile(command, args, {
-        timeout: 600000, // 10 min timeout
-        maxBuffer: 1024 * 1024 * 10, // 10MB buffer
-        env: { ...process.env, PATH: process.env.PATH + ':/usr/local/bin:/opt/homebrew/bin' }
-      }, (error, stdout, stderr) => {
-        if (stdout) logs.push(...stdout.split('\n').filter(Boolean));
-        if (stderr) logs.push(...stderr.split('\n').filter(Boolean));
-
-        if (error) {
-          // Some tools write to stderr but still succeed
-          if (error.killed) {
-            reject(new Error('Download timed out (10 min limit)'));
-          } else {
-            // Check if files were actually downloaded despite the "error"
-            const files = fs.readdirSync(downloadsDir);
-            const audioFiles = files.filter(f => ['.mp3', '.wav', '.flac', '.m4a', '.ogg'].includes(path.extname(f).toLowerCase()));
-            if (audioFiles.length > 0) {
-              resolve({ downloadsDir, audioFiles });
-            } else {
-              reject(new Error(`${command} failed: ${error.message}. Make sure ${command} is installed (pip install ${isSpotify ? 'spotdl' : 'scdl'}).`));
-            }
-          }
-        } else {
-          const files = fs.readdirSync(downloadsDir);
-          const audioFiles = files.filter(f => ['.mp3', '.wav', '.flac', '.m4a', '.ogg'].includes(path.extname(f).toLowerCase()));
-          resolve({ downloadsDir, audioFiles });
+    if (isSpotify) {
+      push('Fetching Spotify track list...');
+      let trackList = [];
+      try {
+        const details = await getDetails(url);
+        let raw = details?.tracks ?? details;
+        trackList = Array.isArray(raw) ? raw : (raw?.items || raw?.tracks?.items || [raw]).flat();
+        if (trackList.length === 0 && details?.preview) {
+          trackList = [details.preview];
         }
-      });
-    });
+      } catch (e) {
+        push(`getDetails failed: ${e.message}. Trying getTracks...`);
+        trackList = await getTracks(url).catch(() => []);
+      }
+      const queries = trackList.map(parseSpotifyTrack).filter(Boolean);
 
-    if (result.audioFiles.length === 0) {
+      if (queries.length === 0) {
+        return { success: false, error: 'Could not parse any tracks from Spotify URL. Make sure the link is a playlist, album, or track.', logs };
+      }
+      push(`Found ${queries.length} track(s). Downloading from YouTube Music...`);
+      sendDownloadProgress({ current: 0, total: queries.length, phase: 'download' });
+
+      for (let i = 0; i < queries.length; i++) {
+        const { title, artist } = queries[i];
+        const searchQuery = `ytsearch1:${artist} - ${title}`;
+        sendDownloadProgress({ current: i, total: queries.length, phase: 'download' });
+        try {
+          push(`[${i + 1}/${queries.length}] ${artist} - ${title}`);
+          await youtubedl(searchQuery, ytdlOpts, { timeout: 120000 });
+        } catch (err) {
+          push(`  Skip (not found): ${err.message?.slice(0, 80)}`);
+        }
+      }
+      sendDownloadProgress({ current: queries.length, total: queries.length, phase: 'download' });
+    } else {
+      push('Downloading from SoundCloud...');
+      const scOutput = path.join(downloadsDir, '%(playlist_index)s - %(title)s.%(ext)s').replace(/\\/g, '/');
+      try {
+        await youtubedl(url, { ...ytdlOpts, output: scOutput }, { timeout: 600000 });
+      } catch (err) {
+        if (!fs.readdirSync(downloadsDir).some(f => ['.mp3', '.m4a', '.ogg'].includes(path.extname(f).toLowerCase()))) {
+          return { success: false, error: `SoundCloud download failed: ${err.message}`, logs };
+        }
+      }
+    }
+
+    const audioFiles = fs.readdirSync(downloadsDir).filter(f =>
+      ['.mp3', '.wav', '.flac', '.m4a', '.ogg'].includes(path.extname(f).toLowerCase())
+    );
+
+    if (audioFiles.length === 0) {
       return { success: false, error: 'No audio files were downloaded.', logs };
     }
 
-    logs.push(`Downloaded ${result.audioFiles.length} file(s)`);
+    const result = { downloadsDir, audioFiles };
+    push(`Downloaded ${result.audioFiles.length} file(s)`);
+    sendDownloadProgress({ phase: 'importing', current: 0, total: result.audioFiles.length });
 
     // Create playlist
     const playlist = await prisma.playlist.create({
@@ -562,6 +624,7 @@ ipcMain.handle('download-from-url', async (_, { url, playlistName }) => {
       const filePath = path.join(result.downloadsDir, fileName);
       try {
         // Parse metadata
+        const mm = await getMM();
         const metadata = await mm.parseFile(filePath);
         const title = metadata.common.title || path.basename(filePath, path.extname(filePath));
         const artist = metadata.common.artist || null;
@@ -595,7 +658,6 @@ ipcMain.handle('download-from-url', async (_, { url, playlistName }) => {
         }
 
         if (song) {
-          // Add to playlist
           const maxPos = await prisma.playlistSong.findFirst({
             where: { playlistId: playlist.id },
             orderBy: { position: 'desc' },
@@ -605,13 +667,14 @@ ipcMain.handle('download-from-url', async (_, { url, playlistName }) => {
             data: { playlistId: playlist.id, songId: song.id, position: maxPos ? maxPos.position + 1 : 0 }
           });
           songCount++;
+          sendDownloadProgress({ phase: 'importing', current: songCount, total: result.audioFiles.length });
         }
       } catch (parseErr) {
-        logs.push(`Warning: Failed to import ${fileName}: ${parseErr.message}`);
+        push(`Warning: Failed to import ${fileName}: ${parseErr.message}`);
       }
     }
 
-    logs.push(`Imported ${songCount} song(s) into playlist "${playlistName}"`);
+    push(`Imported ${songCount} song(s) into playlist "${playlistName}"`);
     return { success: true, songCount, logs };
   } catch (error) {
     logs.push(`Error: ${error.message}`);

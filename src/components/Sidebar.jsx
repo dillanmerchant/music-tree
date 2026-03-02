@@ -20,6 +20,7 @@ export default function Sidebar() {
     setActivePlaylist,
     addSong,
     addPlaylist,
+    addSongToPlaylist,
     openSettings,
     openDownloadModal,
     fetchSongs 
@@ -93,12 +94,13 @@ export default function Sidebar() {
       const playlistResult = await window.api.createPlaylist(filesResult.folderName);
       if (!playlistResult.success) return;
 
+      addPlaylist(playlistResult.data);
+
       // Add songs and link to playlist
       for (const filePath of filesResult.data) {
         const metadataResult = await window.api.parseAudioMetadata(filePath);
         const songData = metadataResult.data;
 
-        // Check if song already exists
         const existingSong = songs.find(s => s.filePath === filePath);
         let songId;
 
@@ -112,14 +114,13 @@ export default function Sidebar() {
           }
         }
 
-        // Add to playlist
         if (songId) {
-          await window.api.addSongToPlaylist(playlistResult.data.id, songId);
+          const addResult = await window.api.addSongToPlaylist(playlistResult.data.id, songId);
+          if (addResult.success) {
+            addSongToPlaylist(playlistResult.data.id, addResult.data);
+          }
         }
       }
-
-      // Refresh playlists
-      addPlaylist(playlistResult.data);
     } catch (error) {
       console.error('Error importing playlist:', error);
     }

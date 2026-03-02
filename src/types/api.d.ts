@@ -95,6 +95,10 @@ interface ElectronAPI {
   openFolderDialog: () => Promise<ApiResponse<string | null>>;
   parseAudioMetadata: (filePath: string) => Promise<ApiResponse<SongMetadata>>;
   getFolderAudioFiles: (folderPath: string) => Promise<ApiResponse<string[]> & { folderName?: string }>;
+
+  // Download (Spotify/SoundCloud)
+  downloadFromUrl: (url: string, playlistName: string) => Promise<ApiResponse<{ songCount: number; logs: string[] }>>;
+  onDownloadProgress: (callback: (data: { logs?: string[]; log?: string; phase?: string; current?: number; total?: number }) => void) => () => void;
 }
 
 declare global {
