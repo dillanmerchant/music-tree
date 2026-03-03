@@ -14,6 +14,7 @@ jobs:
     strategy:
       matrix:
         os: [macos-latest, windows-latest]
+      max-parallel: 1
 
     steps:
       - name: Check out Git repository
@@ -31,13 +32,18 @@ jobs:
           npm ci
           npx prisma generate
         env:
-          # Avoid GitHub API rate limits from youtube-dl-exec postinstall in CI;
-          # the binary will be downloaded later at runtime on the user's machine.
           YOUTUBE_DL_SKIP_DOWNLOAD: "1"
 
-      - name: Build and publish with electron-builder
-        run: npx electron-builder --publish always
+      - name: Set version from tag
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/v}
+          npm version $VERSION --no-git-tag-version
+
+      - name: Full build (Vite + electron-builder)
+        run: |
+          npm run build:seed-db
+          npx vite build
+          npx electron-builder --publish always
         env:
-          # electron-builder will use either of these for GitHub releases
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
