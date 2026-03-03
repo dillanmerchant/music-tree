@@ -88,17 +88,18 @@
     "directories": {
       "output": "release"
     },
-    "mac": {
-      "target": [
-        { "target": "dmg", "arch": ["x64", "arm64"] }
-      ],
-      "category": "public.app-category.music",
-      "hardenedRuntime": true
-    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "dillanmerchant",
+        "repo": "music-tree"
+      }
+    ],
     "win": {
-      "target": [
-        { "target": "nsis", "arch": ["x64"] }
-      ]
+      "target": "nsis"
+    },
+    "mac": {
+      "target": "dmg"
     },
     "nsis": {
       "oneClick": false,
