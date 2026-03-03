@@ -64,11 +64,14 @@ function initializePrisma() {
 }
 
 function createWindow() {
+  const windowIconPath = getResourcePath('build', 'icon.png');
+
   mainWindow = new BrowserWindow({
     width: 1400,
     height: 900,
     minWidth: 1000,
     minHeight: 700,
+    ...(fs.existsSync(windowIconPath) ? { icon: windowIconPath } : {}),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -78,8 +81,8 @@ function createWindow() {
     backgroundColor: '#0f0f0f',
   });
 
-  // In development, load from Vite dev server
-  if (process.env.NODE_ENV !== 'production') {
+  // In development, load from Vite dev server; in packaged app, load built files
+  if (!app.isPackaged) {
     mainWindow.loadURL('http://localhost:5174');
     mainWindow.webContents.openDevTools();
   } else {

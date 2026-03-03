@@ -55,6 +55,7 @@
   "build": {
     "appId": "com.musictree.app",
     "productName": "Music Tree",
+    "icon": "build/icon.png",
     "asar": true,
     "asarUnpack": [
       "node_modules/.prisma/**",
@@ -65,9 +66,14 @@
     "files": [
       "dist/**/*",
       "electron/**/*",
+      "build/**/*",
       "node_modules/**/*",
       "!node_modules/**/README*",
-      "!node_modules/**/*.md"
+      "!node_modules/**/*.md",
+      {
+        "from": "node_modules/.prisma/client/",
+        "to": "node_modules/.prisma/client/"
+      }
     ],
     "extraResources": [
       {
