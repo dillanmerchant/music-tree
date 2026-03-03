@@ -36,7 +36,7 @@ jobs:
           YOUTUBE_DL_SKIP_DOWNLOAD: "1"
 
       - name: Build and publish with electron-builder
-        run: npm run build
+        run: npx electron-builder --publish always
         env:
           # electron-builder will use either of these for GitHub releases
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
