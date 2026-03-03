@@ -30,6 +30,10 @@ jobs:
         run: |
           npm ci
           npx prisma generate
+        env:
+          # Avoid GitHub API rate limits from youtube-dl-exec postinstall in CI;
+          # the binary will be downloaded later at runtime on the user's machine.
+          YOUTUBE_DL_SKIP_DOWNLOAD: "1"
 
       - name: Build and publish with electron-builder
         run: npm run build
