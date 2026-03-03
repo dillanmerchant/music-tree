@@ -6,6 +6,7 @@ import AudioPlayer from './components/AudioPlayer';
 import AddConnectionModal from './components/modals/AddConnectionModal';
 import AddToPlaylistModal from './components/modals/AddToPlaylistModal';
 import DownloadModal from './components/modals/DownloadModal';
+import HelpModal from './components/modals/HelpModal';
 import SettingsPanel from './components/SettingsPanel';
 
 function App() {
@@ -16,6 +17,7 @@ function App() {
     isAddToPlaylistModalOpen,
     isDownloadModalOpen,
     isSettingsOpen,
+    isHelpOpen,
     currentlyPlaying
   } = useMusicStore();
 
@@ -23,6 +25,18 @@ function App() {
   useEffect(() => {
     initialize();
   }, [initialize]);
+
+  // Keep download progress in sync even when modal is closed (so reopening shows current state)
+  useEffect(() => {
+    const unsub = window.api.onDownloadProgress?.((data) => {
+      useMusicStore.getState().setDownloadState({
+        ...(data.logs && { logs: data.logs }),
+        ...(data.phase !== undefined && { progress: { current: data.current ?? 0, total: data.total ?? 0, phase: data.phase } }),
+        ...(data.cancelled && { isDownloading: false, status: { type: 'error', message: 'Download cancelled.' } }),
+      });
+    });
+    return () => unsub?.();
+  }, []);
 
   if (isLoading) {
     return (
@@ -54,6 +68,7 @@ function App() {
       {isAddConnectionModalOpen && <AddConnectionModal />}
       {isAddToPlaylistModalOpen && <AddToPlaylistModal />}
       {isDownloadModalOpen && <DownloadModal />}
+      {isHelpOpen && <HelpModal />}
       
       {/* Settings Panel */}
       {isSettingsOpen && <SettingsPanel />}

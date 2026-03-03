@@ -36,11 +36,18 @@ async function getMM() {
 let prisma;
 let mainWindow;
 
+function getResourcePath(...segments) {
+  if (app.isPackaged) {
+    return path.join(process.resourcesPath, ...segments);
+  }
+  return path.join(__dirname, '..', ...segments);
+}
+
 function initializePrisma() {
   const dbPath = path.join(app.getPath('userData'), 'music-tree.db');
   
-  // Copy the initial database if it doesn't exist in userData
-  const sourceDb = path.join(__dirname, '../prisma/music-tree.db');
+  // Copy the initial seed database if one doesn't exist in userData yet
+  const sourceDb = getResourcePath('prisma', 'music-tree.db');
   if (!fs.existsSync(dbPath) && fs.existsSync(sourceDb)) {
     fs.copyFileSync(sourceDb, dbPath);
   }
@@ -89,20 +96,56 @@ function registerAudioProtocol() {
   if (typeof protocol.handle === 'function') {
     protocol.handle('music-tree-file', (request) => {
       try {
-        console.log('[Protocol] Request URL:', request.url.slice(0, 100));
         const u = new URL(request.url);
-        console.log('[Protocol] Parsed — host:', u.hostname, 'pathname:', u.pathname.slice(0, 60));
         const encoded = u.pathname.startsWith('/') ? u.pathname.slice(1) : u.pathname;
         const filePath = Buffer.from(encoded, 'base64url').toString('utf-8');
-        console.log('[Protocol] Decoded filePath:', filePath);
 
         if (!fs.existsSync(filePath)) {
-          console.error('[Protocol] File NOT found on disk:', filePath);
           return new Response('Not Found', { status: 404 });
         }
-        console.log('[Protocol] File exists, serving via net.fetch');
-        const fileUrl = pathToFileURL(filePath).href;
-        return net.fetch(fileUrl);
+
+        const stat = fs.statSync(filePath);
+        const total = stat.size;
+        const ext = path.extname(filePath).toLowerCase();
+        const mimeTypes = { '.mp3': 'audio/mpeg', '.wav': 'audio/wav', '.ogg': 'audio/ogg', '.flac': 'audio/flac', '.m4a': 'audio/mp4', '.aac': 'audio/aac' };
+        const contentType = mimeTypes[ext] || 'application/octet-stream';
+
+        const rangeHeader = request.headers.get('Range');
+        // To debug progress bar seeking: run with DEBUG_SEEK=1 (e.g. DEBUG_SEEK=1 npm run dev)
+        if (process.env.DEBUG_SEEK) {
+          console.log('[Protocol] Request Range:', rangeHeader || '(none)', 'total bytes:', total);
+        }
+        if (rangeHeader) {
+          const match = rangeHeader.match(/bytes=(\d+)-(\d*)/);
+          if (match) {
+            const start = parseInt(match[1], 10);
+            const end = match[2] ? parseInt(match[2], 10) : total - 1;
+            const chunkSize = end - start + 1;
+            if (process.env.DEBUG_SEEK) {
+              console.log('[Protocol] Serving 206 Partial Content bytes', start, '-', end);
+            }
+            const stream = fs.createReadStream(filePath, { start, end });
+            return new Response(stream, {
+              status: 206,
+              headers: {
+                'Content-Type': contentType,
+                'Content-Length': String(chunkSize),
+                'Content-Range': `bytes ${start}-${end}/${total}`,
+                'Accept-Ranges': 'bytes',
+              },
+            });
+          }
+        }
+
+        const stream = fs.createReadStream(filePath);
+        return new Response(stream, {
+          status: 200,
+          headers: {
+            'Content-Type': contentType,
+            'Content-Length': String(total),
+            'Accept-Ranges': 'bytes',
+          },
+        });
       } catch (e) {
         console.error('[Protocol] Handler error:', e);
         return new Response('Not Found', { status: 404 });
@@ -122,6 +165,20 @@ function registerAudioProtocol() {
   }
 }
 
+function runDevSchemaSync() {
+  if (app.isPackaged) return;
+  try {
+    const userDbPath = path.join(app.getPath('userData'), 'music-tree.db');
+    execSync('npx prisma db push', {
+      env: { ...process.env, DATABASE_URL: `file:${userDbPath}` },
+      stdio: 'pipe',
+      cwd: path.join(__dirname, '..')
+    });
+  } catch (_) {
+    // Already in sync
+  }
+}
+
 app.whenReady().then(async () => {
   registerAudioProtocol();
 
@@ -131,17 +188,8 @@ app.whenReady().then(async () => {
   try {
     await prisma.$connect();
     console.log('Database connected successfully');
-    // Ensure schema is in sync (e.g. new columns like downloadFolderPath)
-    try {
-      const userDbPath = path.join(app.getPath('userData'), 'music-tree.db');
-      execSync('npx prisma db push', {
-        env: { ...process.env, DATABASE_URL: `file:${userDbPath}` },
-        stdio: 'pipe',
-        cwd: path.join(__dirname, '..')
-      });
-    } catch (pushErr) {
-      // Ignore if already in sync
-    }
+    // In dev mode, sync schema via prisma CLI; in production the seed DB is pre-built
+    runDevSchemaSync();
     // Initialize default settings if they don't exist
     let settings = await prisma.settings.findUnique({ where: { id: 'default' } });
     if (!settings) {
@@ -150,15 +198,13 @@ app.whenReady().then(async () => {
       });
     }
   } catch (error) {
-    // P2021 = table doesn't exist - run schema migration and retry
-    if (error.code === 'P2021') {
+    if (error.code === 'P2021' && !app.isPackaged) {
       try {
         const dbPath = path.join(app.getPath('userData'), 'music-tree.db');
-        const cwd = path.join(__dirname, '..');
         execSync('npx prisma db push', {
           env: { ...process.env, DATABASE_URL: `file:${dbPath}` },
           stdio: 'pipe',
-          cwd
+          cwd: path.join(__dirname, '..')
         });
         console.log('Database schema applied successfully');
         await prisma.$connect();
@@ -361,13 +407,33 @@ ipcMain.handle('remove-song-from-playlist', async (_, { playlistId, songId }) =>
   }
 });
 
-// Delete playlist
-ipcMain.handle('delete-playlist', async (_, playlistId) => {
+// Delete playlist (optionally delete the songs from the library too)
+ipcMain.handle('delete-playlist', async (_, { playlistId, deleteSongs = false }) => {
   try {
-    await prisma.playlist.delete({
-      where: { id: playlistId }
+    const id = typeof playlistId === 'string' ? playlistId : playlistId?.playlistId;
+    const alsoDeleteSongs = deleteSongs || (typeof playlistId === 'object' && playlistId?.deleteSongs);
+    if (!id) return { success: false, error: 'Playlist ID required' };
+
+    const playlist = await prisma.playlist.findUnique({
+      where: { id },
+      include: { songs: { select: { songId: true } } }
     });
-    return { success: true };
+    if (!playlist) return { success: false, error: 'Playlist not found' };
+
+    const songIds = (playlist.songs || []).map((ps) => ps.songId);
+
+    await prisma.playlist.delete({ where: { id } });
+
+    if (alsoDeleteSongs && songIds.length > 0) {
+      for (const songId of songIds) {
+        try {
+          await prisma.song.delete({ where: { id: songId } });
+        } catch (e) {
+          if (e.code !== 'P2025') console.error('Error deleting song', songId, e);
+        }
+      }
+    }
+    return { success: true, deletedSongs: alsoDeleteSongs ? songIds.length : 0 };
   } catch (error) {
     console.error('Error deleting playlist:', error);
     return { success: false, error: error.message };
@@ -672,7 +738,13 @@ function sendDownloadProgress(data) {
   }
 }
 
+let downloadCancelRequested = false;
+ipcMain.on('cancel-download', () => {
+  downloadCancelRequested = true;
+});
+
 ipcMain.handle('download-from-url', async (_, { url, playlistName }) => {
+  downloadCancelRequested = false;
   const logs = [];
   const push = (msg) => { logs.push(msg); sendDownloadProgress({ log: msg, logs: [...logs] }); };
   try {
@@ -772,6 +844,11 @@ ipcMain.handle('download-from-url', async (_, { url, playlistName }) => {
       sendDownloadProgress({ current: 0, total: queries.length, phase: 'download' });
 
       for (let i = 0; i < queries.length; i++) {
+        if (downloadCancelRequested) {
+          push('Download cancelled.');
+          sendDownloadProgress({ cancelled: true, logs });
+          return { success: false, cancelled: true, logs };
+        }
         const { title, artist } = queries[i];
         const searchQuery = artist
           ? `ytsearch1:${artist} - ${title}`
@@ -796,6 +873,11 @@ ipcMain.handle('download-from-url', async (_, { url, playlistName }) => {
       }
       sendDownloadProgress({ current: queries.length, total: queries.length, phase: 'download' });
     } else {
+      if (downloadCancelRequested) {
+        push('Download cancelled.');
+        sendDownloadProgress({ cancelled: true, logs });
+        return { success: false, cancelled: true, logs };
+      }
       push('Downloading from SoundCloud...');
       const scOutput = path.join(downloadsDir, '%(title)s.%(ext)s').replace(/\\/g, '/');
       try {
@@ -805,6 +887,12 @@ ipcMain.handle('download-from-url', async (_, { url, playlistName }) => {
           return { success: false, error: `SoundCloud download failed: ${err.message}`, logs };
         }
       }
+    }
+
+    if (downloadCancelRequested) {
+      push('Download cancelled.');
+      sendDownloadProgress({ cancelled: true, logs });
+      return { success: false, cancelled: true, logs };
     }
 
     const audioFiles = fs.readdirSync(downloadsDir).filter(f =>
@@ -918,10 +1006,15 @@ ipcMain.handle('download-from-url', async (_, { url, playlistName }) => {
     push(`Imported ${songCount} song(s) into playlist "${playlistName}"`);
 
     if (songCount > 0 && mainWindow) {
-      new Notification({
-        title: 'Download complete',
-        body: `Music Tree: ${songCount} song(s) added to "${playlistName}".`
-      }).show();
+      try {
+        const n = new Notification({
+          title: 'Download complete',
+          body: `Music Tree: ${songCount} song(s) added to "${playlistName}".`
+        });
+        n.show();
+      } catch (notifErr) {
+        console.warn('System notification failed (check System Preferences > Notifications):', notifErr.message);
+      }
     }
 
     return { success: true, songCount, logs, downloadsDir };

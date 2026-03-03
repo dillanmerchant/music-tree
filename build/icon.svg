@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none">
+  <!-- Background circle -->
+  <circle cx="256" cy="256" r="248" fill="#0f0f0f" stroke="#22c55e" stroke-width="8"/>
+  <!-- Tree trunk -->
+  <rect x="226" y="280" width="60" height="80" rx="4" fill="#22c55e"/>
+  <!-- Tree foliage (three rounded blobs) -->
+  <ellipse cx="256" cy="200" rx="90" ry="70" fill="#16a34a"/>
+  <ellipse cx="200" cy="260" rx="55" ry="50" fill="#15803d"/>
+  <ellipse cx="312" cy="255" rx="55" ry="50" fill="#15803d"/>
+  <!-- Music note -->
+  <circle cx="256" cy="160" r="28" fill="#ffffff"/>
+  <rect x="250" y="100" width="12" height="75" fill="#ffffff"/>
+  <ellipse cx="256" cy="100" rx="20" ry="12" fill="#ffffff"/>
+</svg>

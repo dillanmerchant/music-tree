@@ -8,7 +8,8 @@
     "dev": "npm run db:setup && concurrently \"npm run dev:vite\" \"npm run dev:electron\"",
     "dev:vite": "vite --port 5174 --strictPort",
     "dev:electron": "wait-on http://localhost:5174 && env -u ELECTRON_RUN_AS_NODE electron .",
-    "build": "vite build && npm run build:electron",
+    "build": "npm run build:seed-db && vite build && npm run build:electron",
+    "build:seed-db": "node scripts/create-seed-db.js",
     "build:electron": "electron-builder",
     "postinstall": "prisma generate",
     "db:setup": "node -e \"const fs=require('fs'); if(!fs.existsSync('.env')){fs.copyFileSync('.env.example','.env');console.log('Created .env from .env.example');}\" && prisma db push",
@@ -54,19 +55,52 @@
   "build": {
     "appId": "com.musictree.app",
     "productName": "Music Tree",
+    "asar": true,
+    "asarUnpack": [
+      "node_modules/.prisma/**",
+      "node_modules/@prisma/engines/**",
+      "node_modules/better-sqlite3/**",
+      "node_modules/youtube-dl-exec/**"
+    ],
     "files": [
       "dist/**/*",
       "electron/**/*",
-      "node_modules/**/*"
+      "node_modules/**/*",
+      "!node_modules/**/README*",
+      "!node_modules/**/*.md"
+    ],
+    "extraResources": [
+      {
+        "from": "prisma/music-tree.db",
+        "to": "prisma/music-tree.db"
+      },
+      {
+        "from": "prisma/schema.prisma",
+        "to": "prisma/schema.prisma"
+      }
     ],
     "directories": {
       "output": "release"
     },
     "mac": {
-      "target": "dmg"
+      "target": [
+        { "target": "dmg", "arch": ["x64", "arm64"] }
+      ],
+      "category": "public.app-category.music",
+      "hardenedRuntime": true
     },
     "win": {
-      "target": "nsis"
+      "target": [
+        { "target": "nsis", "arch": ["x64"] }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    },
+    "linux": {
+      "target": ["AppImage"],
+      "category": "Audio"
     }
   }
 }

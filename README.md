@@ -62,6 +62,14 @@ npm run build
 
 This will create distributable packages in the `release/` directory.
 
+### App icon
+
+To use your own app icon in the built executable, add a 512×512 (or 1024×1024) PNG at `build/icon.png`. A sample SVG is in `build/icon.svg` that you can export to PNG. See `build/README.md` for details.
+
+### Notifications
+
+When a URL download finishes, the app shows a system notification. On macOS, if you don’t see it, open **System Preferences → Notifications**, find **Music Tree**, and allow notifications.
+
 ## Project Structure
 
 ```

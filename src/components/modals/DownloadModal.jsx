@@ -1,18 +1,20 @@
-import { useState } from 'react';
-import { X, Download, Music, Loader2, CheckCircle, AlertCircle, FolderOpen } from 'lucide-react';
+import { useState, useRef } from 'react';
+import { X, Download, Music, Loader2, CheckCircle, AlertCircle, FolderOpen, Square } from 'lucide-react';
 import useMusicStore from '../../store/useMusicStore';
 import { analyzeAndUpdateSong } from '../../utils/audioAnalysis';
 
 export default function DownloadModal() {
-  const { closeDownloadModal, fetchSongs, fetchPlaylists } = useMusicStore();
+  const { closeDownloadModal, fetchSongs, fetchPlaylists, downloadState, setDownloadState } = useMusicStore();
   
   const [url, setUrl] = useState('');
   const [playlistName, setPlaylistName] = useState('');
-  const [isDownloading, setIsDownloading] = useState(false);
-  const [status, setStatus] = useState(null);
-  const [logs, setLogs] = useState([]);
-  const [progress, setProgress] = useState(null); // { current, total, phase }
-  const [downloadsDir, setDownloadsDir] = useState(null); // folder path when download completes
+  const isDownloadingRef = useRef(false);
+
+  const isDownloading = downloadState.isDownloading;
+  const progress = downloadState.progress;
+  const logs = downloadState.logs;
+  const status = downloadState.status;
+  const downloadsDir = downloadState.downloadsDir;
 
   const detectPlatform = (inputUrl) => {
     if (inputUrl.includes('spotify.com') || inputUrl.includes('spotify:')) return 'spotify';
@@ -25,28 +27,29 @@ export default function DownloadModal() {
   const handleDownload = async () => {
     if (!url.trim() || !playlistName.trim()) return;
     
-    setIsDownloading(true);
-    setStatus(null);
-    setLogs([]);
-    setProgress(null);
-    setDownloadsDir(null);
-
-    const unsubscribe = window.api.onDownloadProgress?.((data) => {
-      if (data.logs) setLogs(data.logs);
-      if (data.phase !== undefined) setProgress({ current: data.current ?? 0, total: data.total ?? 0, phase: data.phase });
+    isDownloadingRef.current = true;
+    setDownloadState({
+      isDownloading: true,
+      progress: null,
+      logs: [],
+      status: null,
+      downloadsDir: null,
     });
 
     try {
       const result = await window.api.downloadFromUrl(url.trim(), playlistName.trim());
       
       if (result.success) {
-        setStatus({ type: 'success', message: `Downloaded ${result.songCount} song(s) into "${playlistName}"` });
-        setLogs(result.logs || []);
-        if (result.downloadsDir) setDownloadsDir(result.downloadsDir);
+        setDownloadState({
+          isDownloading: false,
+          progress: null,
+          logs: result.logs || [],
+          status: { type: 'success', message: `Downloaded ${result.songCount} song(s) into "${playlistName}"` },
+          downloadsDir: result.downloadsDir ?? null,
+        });
         await fetchSongs();
         await fetchPlaylists();
 
-        // Analyze BPM/key locally for newly imported songs missing metadata
         const allSongs = useMusicStore.getState().songs;
         const needAnalysis = allSongs.filter(s => !s.bpm || !s.key);
         for (const song of needAnalysis) {
@@ -54,17 +57,34 @@ export default function DownloadModal() {
             if (updates) useMusicStore.getState().updateSong(song.id, updates);
           });
         }
+      } else if (result.cancelled) {
+        setDownloadState({
+          isDownloading: false,
+          progress: null,
+          logs: result.logs || [],
+          status: { type: 'error', message: 'Download cancelled.' },
+        });
       } else {
-        setStatus({ type: 'error', message: result.error });
-        setLogs(result.logs || []);
+        setDownloadState({
+          isDownloading: false,
+          progress: null,
+          logs: result.logs || [],
+          status: { type: 'error', message: result.error },
+        });
       }
     } catch (error) {
-      setStatus({ type: 'error', message: error.message });
+      setDownloadState({
+        isDownloading: false,
+        progress: null,
+        status: { type: 'error', message: error.message },
+      });
     } finally {
-      unsubscribe?.();
-      setIsDownloading(false);
-      setProgress(null);
+      isDownloadingRef.current = false;
     }
+  };
+
+  const handleCancelDownload = () => {
+    window.api.cancelDownload?.();
   };
 
   return (
@@ -180,12 +200,22 @@ export default function DownloadModal() {
 
         {/* Footer */}
         <div className="px-6 py-4 border-t border-border flex items-center justify-end gap-3">
-          <button
-            onClick={closeDownloadModal}
-            className="px-4 py-2 rounded-lg text-sm text-gray-400 hover:text-white hover:bg-surface-hover"
-          >
-            Cancel
-          </button>
+          {isDownloading ? (
+            <button
+              onClick={handleCancelDownload}
+              className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium bg-red-500/20 text-red-400 hover:bg-red-500/30"
+            >
+              <Square size={14} />
+              Cancel download
+            </button>
+          ) : (
+            <button
+              onClick={closeDownloadModal}
+              className="px-4 py-2 rounded-lg text-sm text-gray-400 hover:text-white hover:bg-surface-hover"
+            >
+              {status ? 'Close' : 'Cancel'}
+            </button>
+          )}
           <button
             onClick={handleDownload}
             disabled={!url.trim() || !playlistName.trim() || !platform || isDownloading}

@@ -40,8 +40,9 @@ contextBridge.exposeInMainWorld('api', {
   removeSongFromPlaylist: (playlistId, songId) => 
     ipcRenderer.invoke('remove-song-from-playlist', { playlistId, songId }),
   
-  // Delete a playlist
-  deletePlaylist: (playlistId) => ipcRenderer.invoke('delete-playlist', playlistId),
+  // Delete a playlist (deleteSongs: true to also remove songs from the library)
+  deletePlaylist: (playlistId, deleteSongs = false) =>
+    ipcRenderer.invoke('delete-playlist', { playlistId, deleteSongs }),
 
   // ============================================
   // Connection Operations
@@ -96,6 +97,7 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.on('download-progress', handler);
     return () => ipcRenderer.removeListener('download-progress', handler);
   },
+  cancelDownload: () => ipcRenderer.send('cancel-download'),
 
   // Get playable URL for local audio (custom protocol)
   getAudioUrl: (filePath) => ipcRenderer.invoke('get-audio-url', filePath),

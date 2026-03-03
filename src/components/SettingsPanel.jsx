@@ -1,6 +1,8 @@
 import { useState, useEffect } from 'react';
-import { X, Save, Sliders, Sparkles, Moon, Sun, FolderOpen, FolderInput } from 'lucide-react';
+import { X, Save, Sliders, Sparkles, Moon, Sun, FolderOpen, FolderInput, Bug, Mail } from 'lucide-react';
 import useMusicStore from '../store/useMusicStore';
+
+const REPORT_EMAIL = 'dillan.merchant@gmail.com';
 
 export default function SettingsPanel() {
   const { settings, setSettings, closeSettings, fetchSettings, isSettingsOpen } = useMusicStore();
@@ -14,6 +16,8 @@ export default function SettingsPanel() {
   const [defaultDownloadPath, setDefaultDownloadPath] = useState('');
   const [isSaving, setIsSaving] = useState(false);
   const [hasChanges, setHasChanges] = useState(false);
+  const [reportType, setReportType] = useState('bug');
+  const [reportMessage, setReportMessage] = useState('');
 
   useEffect(() => {
     window.api.getDefaultDownloadPath?.().then((res) => {
@@ -111,6 +115,54 @@ export default function SettingsPanel() {
 
         {/* Settings Content */}
         <div className="p-6 space-y-8">
+          {/* Report a bug or feature idea */}
+          <section>
+            <h3 className="text-sm font-medium text-white mb-4 flex items-center gap-2">
+              <Bug size={16} className="text-primary" />
+              Report a bug or feature idea
+            </h3>
+            <div className="bg-background rounded-lg p-4 space-y-3">
+              <p className="text-xs text-gray-500">
+                Describe the issue or idea below, then click to open your email client. The message will be addressed to the developer.
+              </p>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => setReportType('bug')}
+                  className={`flex-1 px-3 py-2 rounded-lg text-xs font-medium transition-colors
+                    ${reportType === 'bug' ? 'bg-primary/20 text-primary border border-primary/40' : 'bg-surface-hover text-gray-400 border border-transparent hover:text-white'}`}
+                >
+                  Bug report
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setReportType('feature')}
+                  className={`flex-1 px-3 py-2 rounded-lg text-xs font-medium transition-colors
+                    ${reportType === 'feature' ? 'bg-primary/20 text-primary border border-primary/40' : 'bg-surface-hover text-gray-400 border border-transparent hover:text-white'}`}
+                >
+                  Feature idea
+                </button>
+              </div>
+              <textarea
+                value={reportMessage}
+                onChange={(e) => setReportMessage(e.target.value)}
+                placeholder={reportType === 'bug' ? 'What went wrong? Steps to reproduce?' : 'Describe your feature idea...'}
+                rows={3}
+                className="w-full bg-surface border border-border rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-primary resize-none"
+              />
+              <a
+                href={`mailto:${REPORT_EMAIL}?subject=Music Tree - ${reportType === 'bug' ? 'Bug Report' : 'Feature Idea'}&body=${encodeURIComponent(
+                  (reportMessage.trim() || '(No message entered)') +
+                  '\n\n---\nSent from Music Tree'
+                )}`}
+                className="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium bg-primary text-white hover:bg-primary-hover transition-colors"
+              >
+                <Mail size={16} />
+                Open in email client
+              </a>
+            </div>
+          </section>
+
           {/* Download location */}
           <section>
             <h3 className="text-sm font-medium text-white mb-4 flex items-center gap-2">
@@ -128,11 +180,11 @@ export default function SettingsPanel() {
                   {localSettings.downloadFolderPath || defaultDownloadPath || 'Default (app data)'}
                 </p>
               </div>
-              <div className="flex items-center gap-2">
+              <div className="flex items-stretch gap-2">
                 <button
                   type="button"
                   onClick={handleSelectDownloadFolder}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm bg-surface-hover text-gray-300 hover:text-white"
+                  className="flex items-center justify-center gap-1.5 px-4 rounded-lg text-sm bg-surface-hover text-gray-300 hover:text-white whitespace-nowrap"
                 >
                   <FolderInput size={14} />
                   Change
@@ -140,20 +192,19 @@ export default function SettingsPanel() {
                 <button
                   type="button"
                   onClick={handleOpenDownloadFolder}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm bg-surface-hover text-gray-300 hover:text-white"
+                  className="flex items-center justify-center gap-1.5 px-4 rounded-lg text-sm bg-surface-hover text-gray-300 hover:text-white"
                 >
                   <FolderOpen size={14} />
                   Open folder
                 </button>
-                {localSettings.downloadFolderPath && (
-                  <button
-                    type="button"
-                    onClick={() => setLocalSettings(prev => ({ ...prev, downloadFolderPath: '' }))}
-                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm text-gray-500 hover:text-white hover:bg-surface-hover"
-                  >
-                    Reset to default
-                  </button>
-                )}
+                <button
+                  type="button"
+                  onClick={() => localSettings.downloadFolderPath && setLocalSettings(prev => ({ ...prev, downloadFolderPath: '' }))}
+                  disabled={!localSettings.downloadFolderPath}
+                  className="flex items-center justify-center gap-1.5 px-4 rounded-lg text-sm text-gray-500 hover:text-white hover:bg-surface-hover disabled:opacity-50 disabled:pointer-events-none"
+                >
+                  Reset to default
+                </button>
               </div>
             </div>
           </section>

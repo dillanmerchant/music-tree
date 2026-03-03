@@ -1,4 +1,4 @@
-import { useRef, useEffect, useState } from 'react';
+import { useRef, useEffect, useState, useCallback } from 'react';
 import { Play, Pause, SkipForward, Volume2, VolumeX, X } from 'lucide-react';
 import useMusicStore from '../store/useMusicStore';
 
@@ -10,6 +10,11 @@ export default function AudioPlayer() {
   const [volume, setVolume] = useState(0.8);
   const [isMuted, setIsMuted] = useState(false);
   const [playbackError, setPlaybackError] = useState(null);
+  const [isSeeking, setIsSeeking] = useState(false);
+  const progressBarRef = useRef(null);
+  const ignoreTimeUpdateRef = useRef(false);
+  const DEBUG_SEEK = true; // Set to false to disable progress bar debug logs
+  const logSeek = (...args) => { if (DEBUG_SEEK) console.log('[AudioPlayer SEEK]', ...args); };
 
   // Handle play/pause state changes (only play when we have a source)
   useEffect(() => {
@@ -82,8 +87,13 @@ export default function AudioPlayer() {
   }, [volume, isMuted]);
 
   const handleTimeUpdate = () => {
+    if (ignoreTimeUpdateRef.current) {
+      logSeek('timeupdate IGNORED (seeking)');
+      return;
+    }
     if (audioRef.current) {
-      setCurrentTime(audioRef.current.currentTime);
+      const t = audioRef.current.currentTime;
+      setCurrentTime(t);
     }
   };
 
@@ -108,13 +118,84 @@ export default function AudioPlayer() {
     setPlaybackError(errMsg);
   };
 
-  const handleSeek = (e) => {
-    const rect = e.currentTarget.getBoundingClientRect();
-    const pct = (e.clientX - rect.left) / rect.width;
-    if (audioRef.current && duration) {
-      audioRef.current.currentTime = pct * duration;
+  const updateSeek = useCallback((clientX) => {
+    const bar = progressBarRef.current;
+    if (!bar || !audioRef.current || !duration) {
+      logSeek('updateSeek SKIP', { bar: !!bar, audio: !!audioRef.current, duration });
+      return;
     }
+    const rect = bar.getBoundingClientRect();
+    const pct = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+    const targetTime = pct * duration;
+    logSeek('updateSeek', { pct: pct.toFixed(3), targetTime: targetTime.toFixed(2), duration });
+    ignoreTimeUpdateRef.current = true;
+    audioRef.current.currentTime = targetTime;
+    setCurrentTime(targetTime);
+    logSeek('audio.currentTime set to', audioRef.current.currentTime);
+  }, [duration]);
+
+  const handleSeekClick = (e) => {
+    e.preventDefault();
+    logSeek('handleSeekClick', e.clientX);
+    updateSeek(e.clientX);
   };
+
+  const handleSeekMouseDown = (e) => {
+    e.preventDefault();
+    logSeek('handleSeekMouseDown', e.clientX);
+    setIsSeeking(true);
+    updateSeek(e.clientX);
+  };
+
+  useEffect(() => {
+    if (!isSeeking) return;
+    const onMove = (e) => updateSeek(e.clientX);
+    const onUp = () => {
+      logSeek('mouseup - end drag');
+      setIsSeeking(false);
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+    return () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+    };
+  }, [isSeeking, updateSeek]);
+
+  // Listen for 'seeked' so we stop ignoring timeupdate after the element has finished seeking
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    const onSeeking = () => {
+      logSeek('audio seeking event');
+      ignoreTimeUpdateRef.current = true;
+    };
+    const onSeeked = () => {
+      logSeek('audio seeked event, currentTime=', audio.currentTime);
+      ignoreTimeUpdateRef.current = false;
+    };
+    const fallback = () => {
+      logSeek('fallback: re-enable timeupdate after 1s');
+      ignoreTimeUpdateRef.current = false;
+    };
+    let t;
+    const onSeekingWithFallback = () => {
+      onSeeking();
+      clearTimeout(t);
+      t = setTimeout(fallback, 1000);
+    };
+    const onSeekedClearFallback = () => {
+      clearTimeout(t);
+      onSeeked();
+    };
+    audio.addEventListener('seeking', onSeekingWithFallback);
+    audio.addEventListener('seeked', onSeekedClearFallback);
+    return () => {
+      clearTimeout(t);
+      audio.removeEventListener('seeking', onSeekingWithFallback);
+      audio.removeEventListener('seeked', onSeekedClearFallback);
+    };
+  }, [currentlyPlaying?.id]);
 
   const formatTime = (seconds) => {
     if (!seconds || isNaN(seconds)) return '0:00';
@@ -155,26 +236,36 @@ export default function AudioPlayer() {
           </button>
         </div>
 
-        {/* Progress Bar */}
+        {/* Progress Bar - click and drag to seek */}
         <div className="flex-1 flex items-center gap-3">
           <span className="text-xs text-gray-500 w-10 text-right font-mono">{formatTime(currentTime)}</span>
-          <div 
-            className="flex-1 h-1.5 bg-border rounded-full cursor-pointer group relative"
-            onClick={handleSeek}
+          <div
+            ref={progressBarRef}
+            role="slider"
+            aria-label="Seek"
+            aria-valuemin={0}
+            aria-valuemax={duration || 100}
+            aria-valuenow={currentTime}
+            tabIndex={0}
+            className="flex-1 h-8 cursor-pointer group relative select-none flex items-center"
+            onClick={handleSeekClick}
+            onMouseDown={handleSeekMouseDown}
           >
-            <div 
-              className="h-full bg-primary rounded-full relative"
-              style={{ width: duration ? `${(currentTime / duration) * 100}%` : '0%' }}
-            >
-              <div className="absolute right-0 top-1/2 -translate-y-1/2 w-3 h-3 rounded-full bg-white shadow
-                opacity-0 group-hover:opacity-100 transition-opacity" />
+            <div className="w-full h-1.5 bg-border rounded-full relative">
+              <div 
+                className="h-full bg-primary rounded-full relative pointer-events-none"
+                style={{ width: duration ? `${(currentTime / duration) * 100}%` : '0%' }}
+              >
+                <div className={`absolute right-0 top-1/2 -translate-y-1/2 w-3 h-3 rounded-full bg-white shadow
+                  transition-opacity ${isSeeking ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`} />
+              </div>
             </div>
           </div>
           <span className="text-xs text-gray-500 w-10 font-mono">{formatTime(duration)}</span>
         </div>
 
-        {/* Volume */}
-        <div className="flex items-center gap-2 w-32 flex-shrink-0">
+        {/* Volume - with padding before close button */}
+        <div className="flex items-center gap-2 w-32 flex-shrink-0 mr-3">
           <button
             onClick={() => setIsMuted(!isMuted)}
             className="text-gray-400 hover:text-white"

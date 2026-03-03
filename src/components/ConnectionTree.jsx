@@ -10,6 +10,7 @@ const MAX_VISIBLE = 24;
 export default function ConnectionTree() {
   const { 
     activeSong, 
+    isLoadingActiveSong,
     openAddConnectionModal,
     settings 
   } = useMusicStore();
@@ -63,6 +64,15 @@ export default function ConnectionTree() {
       transformRef.current.resetTransform();
     }
   }, []);
+
+  // Loading state (prevents flash of stale connections)
+  if (isLoadingActiveSong) {
+    return (
+      <div className="h-full flex items-center justify-center">
+        <div className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+      </div>
+    );
+  }
 
   // Empty state
   if (!activeSong) {

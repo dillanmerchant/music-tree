@@ -5,32 +5,39 @@ import useMusicStore from '../../store/useMusicStore';
 export default function AddToPlaylistModal() {
   const { 
     modalSong,
+    modalSongs,
     playlists, 
     closeAddToPlaylistModal,
     addPlaylist,
     addSongToPlaylist 
   } = useMusicStore();
 
+  const songsToAdd = (modalSongs && modalSongs.length > 0) ? modalSongs : (modalSong ? [modalSong] : []);
+
   const [isCreatingNew, setIsCreatingNew] = useState(false);
   const [newPlaylistName, setNewPlaylistName] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [addedToPlaylists, setAddedToPlaylists] = useState([]);
 
-  // Check if song is already in playlist
-  const isSongInPlaylist = (playlist) => {
-    return playlist.songs?.some((ps) => ps.songId === modalSong?.id);
+  // Check if all songs are already in playlist
+  const isSongInPlaylist = (playlist, song) => {
+    return playlist.songs?.some((ps) => ps.songId === song.id);
   };
+  const allSongsInPlaylist = (playlist) => songsToAdd.every((s) => isSongInPlaylist(playlist, s));
 
   const handleAddToPlaylist = async (playlist) => {
-    if (isSongInPlaylist(playlist)) return;
+    if (allSongsInPlaylist(playlist)) return;
     
     setIsSubmitting(true);
     try {
-      const result = await window.api.addSongToPlaylist(playlist.id, modalSong.id);
-      if (result.success) {
-        addSongToPlaylist(playlist.id, result.data);
-        setAddedToPlaylists((prev) => [...prev, playlist.id]);
+      for (const song of songsToAdd) {
+        if (isSongInPlaylist(playlist, song)) continue;
+        const result = await window.api.addSongToPlaylist(playlist.id, song.id);
+        if (result.success) {
+          addSongToPlaylist(playlist.id, result.data);
+        }
       }
+      setAddedToPlaylists((prev) => [...prev, playlist.id]);
     } catch (error) {
       console.error('Error adding song to playlist:', error);
     } finally {
@@ -43,18 +50,16 @@ export default function AddToPlaylistModal() {
     
     setIsSubmitting(true);
     try {
-      // Create the playlist
       const createResult = await window.api.createPlaylist(newPlaylistName.trim());
       if (createResult.success) {
         addPlaylist(createResult.data);
-        
-        // Add song to the new playlist
-        const addResult = await window.api.addSongToPlaylist(createResult.data.id, modalSong.id);
-        if (addResult.success) {
-          addSongToPlaylist(createResult.data.id, addResult.data);
-          setAddedToPlaylists((prev) => [...prev, createResult.data.id]);
+        for (const song of songsToAdd) {
+          const addResult = await window.api.addSongToPlaylist(createResult.data.id, song.id);
+          if (addResult.success) {
+            addSongToPlaylist(createResult.data.id, addResult.data);
+          }
         }
-        
+        setAddedToPlaylists((prev) => [...prev, createResult.data.id]);
         setNewPlaylistName('');
         setIsCreatingNew(false);
       }
@@ -65,7 +70,7 @@ export default function AddToPlaylistModal() {
     }
   };
 
-  if (!modalSong) return null;
+  if (songsToAdd.length === 0) return null;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
@@ -76,7 +81,9 @@ export default function AddToPlaylistModal() {
           <div>
             <h2 className="text-lg font-semibold text-white">Add to Playlist</h2>
             <p className="text-sm text-gray-400 truncate max-w-[280px]">
-              "{modalSong.title}"
+              {songsToAdd.length === 1
+                ? `"${songsToAdd[0].title}"`
+                : `${songsToAdd.length} songs selected`}
             </p>
           </div>
           <button
@@ -148,7 +155,7 @@ export default function AddToPlaylistModal() {
           ) : (
             <div className="divide-y divide-border">
               {playlists.map((playlist) => {
-                const inPlaylist = isSongInPlaylist(playlist);
+                const inPlaylist = allSongsInPlaylist(playlist);
                 const justAdded = addedToPlaylists.includes(playlist.id);
                 
                 return (

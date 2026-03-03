@@ -1,9 +1,9 @@
 import { useState, useRef, useEffect } from 'react';
-import { MoreVertical, Link2, ListPlus, Trash2, Play, Pause, RefreshCw } from 'lucide-react';
+import { MoreVertical, Link2, ListPlus, Trash2, Play, Pause, RefreshCw, Check } from 'lucide-react';
 import useMusicStore from '../store/useMusicStore';
 import { forceAnalyzeSong } from '../utils/audioAnalysis';
 
-export default function SongCard({ song, compact = false }) {
+export default function SongCard({ song, compact = false, selected = false, selectionMode = false, onToggleSelect }) {
   const { 
     setActiveSongById, 
     activeSong,
@@ -37,8 +37,12 @@ export default function SongCard({ song, compact = false }) {
     }
   }, [menuOpen]);
 
-  const handleClick = () => {
-    // Always fetch fresh data from DB so connections are up-to-date
+  const handleClick = (e) => {
+    if (selectionMode && onToggleSelect) {
+      e.stopPropagation();
+      onToggleSelect(song.id, { shiftKey: e.shiftKey });
+      return;
+    }
     setActiveSongById(song.id);
   };
 
@@ -96,9 +100,22 @@ export default function SongCard({ song, compact = false }) {
     <div
       className={`group relative flex items-center gap-3 px-4 py-3 cursor-pointer
         hover:bg-surface-hover transition-colors
-        ${isActive ? 'bg-surface-hover border-l-2 border-primary' : ''}`}
+        ${isActive ? 'bg-surface-hover border-l-2 border-primary' : ''}
+        ${selected ? 'ring-1 ring-primary/50 bg-primary/5' : ''}`}
       onClick={handleClick}
     >
+      {/* Selection checkbox (when in selection mode) */}
+      {selectionMode && (
+        <button
+          type="button"
+          onClick={(e) => { e.stopPropagation(); onToggleSelect?.(song.id, { shiftKey: e.shiftKey }); }}
+          className={`flex-shrink-0 w-6 h-6 rounded border flex items-center justify-center
+            hover:border-primary transition-colors
+            ${selected ? 'bg-primary/30 border-primary text-primary' : 'border-gray-500'}`}
+        >
+          {selected ? <Check size={14} /> : null}
+        </button>
+      )}
       {/* Play Button */}
       <button
         onClick={handlePlayPause}
@@ -135,8 +152,9 @@ export default function SongCard({ song, compact = false }) {
                 {song.key}
               </span>
             )}
-            <span className="text-gray-500 font-mono w-12 text-right">
-              {formatBpm(song.bpm)} bpm
+            <span className="text-gray-500 font-mono w-12 text-right flex flex-col items-end leading-tight">
+              <span>{formatBpm(song.bpm)}</span>
+              <span className="text-[10px]">bpm</span>
             </span>
           </>
         )}

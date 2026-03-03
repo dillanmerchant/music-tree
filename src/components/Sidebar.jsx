@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useRef, useCallback, useEffect } from 'react';
 import { 
   Plus, 
   Music, 
@@ -9,8 +9,18 @@ import {
   ChevronDown,
   Download,
   Search,
-  X
+  X,
+  HelpCircle,
+  Trash2,
+  RefreshCw,
+  ListPlus,
+  CheckSquare,
+  Square
 } from 'lucide-react';
+
+const SIDEBAR_MIN = 200;
+const SIDEBAR_MAX = 600;
+const SIDEBAR_DEFAULT = 320;
 import useMusicStore from '../store/useMusicStore';
 import SongCard from './SongCard';
 import { analyzeAndUpdateSong } from '../utils/audioAnalysis';
@@ -26,7 +36,9 @@ export default function Sidebar() {
     addSongToPlaylist,
     openSettings,
     openDownloadModal,
-    fetchSongs 
+    openHelp,
+    fetchSongs,
+    deletePlaylist
   } = useMusicStore();
 
   const [playlistsExpanded, setPlaylistsExpanded] = useState(true);
@@ -36,6 +48,35 @@ export default function Sidebar() {
   const [searchVisible, setSearchVisible] = useState(false);
   const [playlistSearchQuery, setPlaylistSearchQuery] = useState('');
   const [playlistSearchVisible, setPlaylistSearchVisible] = useState(false);
+  const [sidebarWidth, setSidebarWidth] = useState(SIDEBAR_DEFAULT);
+  const [playlistToDelete, setPlaylistToDelete] = useState(null); // { playlist } when confirm open
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selectedSongIds, setSelectedSongIds] = useState(new Set());
+  const lastSelectedIndexRef = useRef(null);
+  const dragStartX = useRef(0);
+  const dragStartWidth = useRef(SIDEBAR_DEFAULT);
+
+  // Resize sensitivity: scale down delta so sidebar doesn't jump (0.4 = 40% of pointer movement)
+  const RESIZE_SENSITIVITY = 0.03;
+  const handleResizeStart = useCallback((e) => {
+    e.preventDefault();
+    dragStartX.current = e.clientX;
+    dragStartWidth.current = sidebarWidth;
+    const onMove = (moveE) => {
+      const delta = (moveE.clientX - dragStartX.current) * RESIZE_SENSITIVITY;
+      setSidebarWidth((w) => Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, w + delta)));
+    };
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  }, [sidebarWidth]);
 
   // Get songs to display based on active playlist, then filter by search
   const baseSongs = activePlaylist 
@@ -154,12 +195,143 @@ export default function Sidebar() {
     }
   };
 
+  const handleDeletePlaylistClick = (e, playlist) => {
+    e.stopPropagation();
+    setPlaylistToDelete(playlist);
+  };
+
+  const onToggleSelectSong = useCallback((songId, options) => {
+    const shiftKey = options?.shiftKey;
+    const index = displaySongs.findIndex((s) => s.id === songId);
+    if (index < 0) return;
+
+    if (shiftKey) {
+      const last = lastSelectedIndexRef.current;
+      const from = last != null ? Math.min(last, index) : index;
+      const to = last != null ? Math.max(last, index) : index;
+      setSelectedSongIds((prev) => {
+        const next = new Set(prev);
+        for (let i = from; i <= to; i++) {
+          next.add(displaySongs[i].id);
+        }
+        return next;
+      });
+      return;
+    }
+
+    lastSelectedIndexRef.current = index;
+    setSelectedSongIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(songId)) next.delete(songId);
+      else next.add(songId);
+      return next;
+    });
+  }, [displaySongs]);
+
+  const clearSelection = useCallback(() => {
+    setSelectedSongIds(new Set());
+    setSelectionMode(false);
+    lastSelectedIndexRef.current = null;
+  }, []);
+
+  // Cmd+A / Ctrl+A to select all visible songs when in selection mode
+  useEffect(() => {
+    if (!selectionMode) return;
+    const onKeyDown = (e) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'a') {
+        const tag = e.target?.tagName?.toLowerCase();
+        if (tag === 'input' || tag === 'textarea') return;
+        e.preventDefault();
+        setSelectedSongIds(new Set(displaySongs.map((s) => s.id)));
+      }
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [selectionMode, displaySongs]);
+
+  const handleBulkReanalyze = useCallback(async () => {
+    const ids = Array.from(selectedSongIds);
+    clearSelection();
+    for (const songId of ids) {
+      const song = displaySongs.find((s) => s.id === songId);
+      if (song) {
+        const { forceAnalyzeSong } = await import('../utils/audioAnalysis');
+        const updates = await forceAnalyzeSong(song);
+        if (updates) useMusicStore.getState().updateSong(song.id, updates);
+      }
+    }
+  }, [selectedSongIds, displaySongs, clearSelection]);
+
+  const handleBulkAddToPlaylist = useCallback(() => {
+    const list = Array.from(selectedSongIds)
+      .map((id) => displaySongs.find((s) => s.id === id))
+      .filter(Boolean);
+    if (list.length) {
+      useMusicStore.getState().openAddToPlaylistModal(list);
+      clearSelection();
+    }
+  }, [selectedSongIds, displaySongs, clearSelection]);
+
+  const handleBulkDelete = useCallback(async () => {
+    if (!window.confirm(`Delete ${selectedSongIds.size} song(s) from your library?`)) return;
+    const ids = Array.from(selectedSongIds);
+    clearSelection();
+    for (const songId of ids) {
+      try {
+        const result = await window.api.deleteSong(songId);
+        if (result.success) useMusicStore.getState().deleteSong(songId);
+      } catch (e) {
+        console.error('Error deleting song', songId, e);
+      }
+    }
+  }, [selectedSongIds, clearSelection]);
+
+  const handleDeletePlaylistConfirm = async (deleteSongs) => {
+    if (!playlistToDelete) return;
+    const playlist = playlistToDelete;
+    setPlaylistToDelete(null);
+    try {
+      const result = await window.api.deletePlaylist(playlist.id, deleteSongs);
+      if (result.success) {
+        deletePlaylist(playlist.id);
+        if (activePlaylist?.id === playlist.id) {
+          setActivePlaylist(null);
+        }
+        if (result.deletedSongs > 0) {
+          await fetchSongs();
+        }
+      }
+    } catch (error) {
+      console.error('Error deleting playlist:', error);
+    }
+  };
+
   return (
-    <aside className="w-80 h-full bg-surface border-r border-border flex flex-col">
-      {/* Header with drag region */}
-      <div className="h-12 flex items-center justify-between px-4 border-b border-border drag-region">
+    <aside
+      className="relative h-full bg-surface border-r border-border flex flex-col flex-shrink-0"
+      style={{ width: sidebarWidth }}
+    >
+      {/* Resize handle - hit area on the right edge */}
+      <div
+        role="separator"
+        aria-orientation="vertical"
+        className="absolute top-0 bottom-0 w-2 cursor-col-resize z-20 group"
+        style={{ left: '100%', marginLeft: -4 }}
+        onMouseDown={handleResizeStart}
+      >
+        <div className="absolute left-1/2 top-0 bottom-0 w-0.5 -translate-x-1/2 bg-border group-hover:bg-primary/50 rounded-full transition-colors" />
+      </div>
+      {/* Header with drag region — extra left padding for macOS traffic-light buttons */}
+      <div className="h-12 flex items-center justify-between pl-20 pr-4 border-b border-border drag-region relative">
         <h1 className="text-lg font-semibold text-white no-drag">Music Tree</h1>
         <div className="flex items-center gap-1 no-drag">
+          <button
+            onClick={openHelp}
+            className="p-2 rounded-lg hover:bg-surface-hover text-gray-400 hover:text-white"
+            title="How to use Music Tree"
+          >
+            <HelpCircle size={18} />
+          </button>
           <button
             onClick={openDownloadModal}
             className="p-2 rounded-lg hover:bg-surface-hover text-gray-400 hover:text-white"
@@ -255,16 +427,30 @@ export default function Sidebar() {
             {playlists
               .filter(pl => !playlistSearchQuery.trim() || pl.name.toLowerCase().includes(playlistSearchQuery.toLowerCase()))
               .map((playlist) => (
-              <button
+              <div
                 key={playlist.id}
-                onClick={() => setActivePlaylist(playlist)}
-                className={`w-full flex items-center gap-3 px-4 py-2 text-sm hover:bg-surface-hover
-                  ${activePlaylist?.id === playlist.id ? 'bg-surface-hover text-white' : 'text-gray-400'}`}
+                className={`group/pl flex items-center w-full
+                  ${activePlaylist?.id === playlist.id ? 'bg-surface-hover' : ''}`}
               >
-                <Music size={16} />
-                <span className="truncate">{playlist.name}</span>
-                <span className="ml-auto text-xs text-gray-500">{playlist.songs?.length || 0}</span>
-              </button>
+                <button
+                  type="button"
+                  onClick={() => setActivePlaylist(playlist)}
+                  className={`flex-1 flex items-center gap-3 px-4 py-2 text-sm hover:bg-surface-hover min-w-0
+                    ${activePlaylist?.id === playlist.id ? 'text-white' : 'text-gray-400'}`}
+                >
+                  <Music size={16} className="flex-shrink-0" />
+                  <span className="truncate">{playlist.name}</span>
+                  <span className="ml-auto text-xs text-gray-500 flex-shrink-0">{playlist.songs?.length || 0}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={(e) => handleDeletePlaylistClick(e, playlist)}
+                  className="self-stretch px-3 flex items-center justify-center text-gray-500 hover:text-red-400 hover:bg-surface-hover opacity-0 group-hover/pl:opacity-100 transition-opacity flex-shrink-0 rounded-none"
+                  title="Delete playlist"
+                >
+                  <Trash2 size={14} />
+                </button>
+              </div>
             ))}
 
             {/* No results message */}
@@ -312,6 +498,14 @@ export default function Sidebar() {
           </span>
           <div className="flex items-center gap-1">
             <button
+              onClick={() => { setSelectionMode(!selectionMode); if (!selectionMode) setSelectedSongIds(new Set()); }}
+              className={`p-1.5 rounded hover:bg-surface-hover hover:text-white
+                ${selectionMode ? 'text-primary bg-surface-hover' : 'text-gray-400'}`}
+              title="Select songs for bulk actions"
+            >
+              <CheckSquare size={16} />
+            </button>
+            <button
               onClick={() => { setSearchVisible(!searchVisible); setSearchQuery(''); }}
               className={`p-1.5 rounded hover:bg-surface-hover hover:text-white
                 ${searchVisible ? 'text-primary bg-surface-hover' : 'text-gray-400'}`}
@@ -335,6 +529,45 @@ export default function Sidebar() {
             </button>
           </div>
         </div>
+
+        {/* Bulk actions bar */}
+        {selectedSongIds.size > 0 && (
+          <div className="flex items-center gap-2 px-4 py-2 bg-primary/10 border-b border-border flex-wrap">
+            <span className="text-xs text-gray-300">{selectedSongIds.size} selected</span>
+            <button
+              type="button"
+              onClick={handleBulkReanalyze}
+              className="flex items-center gap-1 px-2 py-1 rounded text-xs bg-surface-hover text-gray-200 hover:text-white"
+            >
+              <RefreshCw size={12} />
+              Re-analyze
+            </button>
+            <button
+              type="button"
+              onClick={handleBulkAddToPlaylist}
+              className="flex items-center gap-1 px-2 py-1 rounded text-xs bg-surface-hover text-gray-200 hover:text-white"
+            >
+              <ListPlus size={12} />
+              Add to playlist
+            </button>
+            <button
+              type="button"
+              onClick={handleBulkDelete}
+              className="flex items-center gap-1 px-2 py-1 rounded text-xs bg-red-500/20 text-red-400 hover:bg-red-500/30"
+            >
+              <Trash2 size={12} />
+              Delete
+            </button>
+            <button
+              type="button"
+              onClick={clearSelection}
+              className="flex items-center gap-1 px-2 py-1 rounded text-xs text-gray-400 hover:text-white hover:bg-surface-hover ml-auto"
+            >
+              <X size={12} />
+              Clear
+            </button>
+          </div>
+        )}
 
         {/* Search Bar */}
         {searchVisible && (
@@ -383,12 +616,53 @@ export default function Sidebar() {
           ) : (
             <div className="divide-y divide-border">
               {displaySongs.map((song) => (
-                <SongCard key={song.id} song={song} />
+                <SongCard
+                  key={song.id}
+                  song={song}
+                  selected={selectedSongIds.has(song.id)}
+                  selectionMode={selectionMode}
+                  onToggleSelect={onToggleSelectSong}
+                />
               ))}
             </div>
           )}
         </div>
       </div>
+
+      {/* Delete playlist confirm */}
+      {playlistToDelete && (
+        <div className="absolute inset-0 z-30 flex items-center justify-center bg-black/50 rounded-lg p-4">
+          <div className="bg-surface border border-border rounded-xl shadow-xl p-4 w-full max-w-xs">
+            <p className="text-sm font-medium text-white mb-1">Delete &quot;{playlistToDelete.name}&quot;</p>
+            <p className="text-xs text-gray-400 mb-4">
+              {playlistToDelete.songs?.length || 0} song(s) in this playlist.
+            </p>
+            <div className="flex flex-col gap-2">
+              <button
+                type="button"
+                onClick={() => handleDeletePlaylistConfirm(false)}
+                className="w-full px-3 py-2 rounded-lg text-sm bg-surface-hover text-gray-200 hover:text-white"
+              >
+                Delete playlist only (keep songs in library)
+              </button>
+              <button
+                type="button"
+                onClick={() => handleDeletePlaylistConfirm(true)}
+                className="w-full px-3 py-2 rounded-lg text-sm bg-red-500/20 text-red-400 hover:bg-red-500/30"
+              >
+                Delete playlist and remove songs from library
+              </button>
+              <button
+                type="button"
+                onClick={() => setPlaylistToDelete(null)}
+                className="w-full px-3 py-2 rounded-lg text-sm text-gray-400 hover:text-white hover:bg-surface-hover mt-1"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </aside>
   );
 }

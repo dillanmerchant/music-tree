@@ -27,6 +27,7 @@ const useMusicStore = create((set, get) => ({
   
   // UI State
   isLoading: false,
+  isLoadingActiveSong: false,
   error: null,
   
   // Audio playback
@@ -38,7 +39,9 @@ const useMusicStore = create((set, get) => ({
   isAddToPlaylistModalOpen: false,
   isDownloadModalOpen: false,
   isSettingsOpen: false,
+  isHelpOpen: false,
   modalSong: null, // Song being acted upon in modals
+  modalSongs: [],   // For bulk "Add to playlist" (array of songs)
 
   // ============================================
   // Song Actions
@@ -66,7 +69,7 @@ const useMusicStore = create((set, get) => ({
     }));
   },
   
-  // Update a song in the store
+  // Update a song in the store (songs list, activeSong, and inside every playlist)
   updateSong: (id, updates) => {
     set((state) => ({
       songs: state.songs.map((song) =>
@@ -74,7 +77,15 @@ const useMusicStore = create((set, get) => ({
       ),
       activeSong: state.activeSong?.id === id 
         ? { ...state.activeSong, ...updates } 
-        : state.activeSong
+        : state.activeSong,
+      playlists: state.playlists.map((playlist) => ({
+        ...playlist,
+        songs: (playlist.songs || []).map((ps) =>
+          ps.songId === id || ps.song?.id === id
+            ? { ...ps, song: { ...(ps.song || {}), ...updates } }
+            : ps
+        ),
+      })),
     }));
   },
   
@@ -111,10 +122,13 @@ const useMusicStore = create((set, get) => ({
     }
   },
 
-  // Select a song as active, always using fresh DB data
+  // Select a song as active, always using fresh DB data.
+  // Show loading state while fetching to prevent stale connections from flashing.
   setActiveSongById: async (songId) => {
+    set({ isLoadingActiveSong: true });
     const fresh = await get().refreshSong(songId);
-    if (fresh) set({ activeSong: fresh });
+    if (fresh) set({ activeSong: fresh, isLoadingActiveSong: false });
+    else set({ isLoadingActiveSong: false });
   },
 
   // ============================================
@@ -270,12 +284,13 @@ const useMusicStore = create((set, get) => ({
     set({ isAddConnectionModalOpen: false, modalSong: null });
   },
   
-  openAddToPlaylistModal: (song) => {
-    set({ isAddToPlaylistModalOpen: true, modalSong: song });
+  openAddToPlaylistModal: (songOrSongs) => {
+    const songs = Array.isArray(songOrSongs) ? songOrSongs : [songOrSongs];
+    set({ isAddToPlaylistModalOpen: true, modalSong: songs[0] || null, modalSongs: songs });
   },
   
   closeAddToPlaylistModal: () => {
-    set({ isAddToPlaylistModalOpen: false, modalSong: null });
+    set({ isAddToPlaylistModalOpen: false, modalSong: null, modalSongs: [] });
   },
   
   openSettings: () => {
@@ -285,6 +300,9 @@ const useMusicStore = create((set, get) => ({
   closeSettings: () => {
     set({ isSettingsOpen: false });
   },
+
+  openHelp: () => set({ isHelpOpen: true }),
+  closeHelp: () => set({ isHelpOpen: false }),
 
   // ============================================
   // Audio Playback Actions
@@ -307,8 +325,22 @@ const useMusicStore = create((set, get) => ({
   },
 
   // ============================================
-  // Download Modal Actions
+  // Download Modal Actions & State (persisted when modal is closed)
   // ============================================
+  
+  downloadState: {
+    isDownloading: false,
+    progress: null,
+    logs: [],
+    status: null,
+    downloadsDir: null,
+  },
+  
+  setDownloadState: (updates) => {
+    set((state) => ({
+      downloadState: { ...state.downloadState, ...updates },
+    }));
+  },
   
   openDownloadModal: () => {
     set({ isDownloadModalOpen: true });

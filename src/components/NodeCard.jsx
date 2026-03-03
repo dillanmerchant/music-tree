@@ -93,9 +93,9 @@ export default function NodeCard({ song, isSource = false, connectionId, onAddCo
       )}
 
       {/* Card Content */}
-      <div className="p-4">
-        {/* Title, Artist, and Play Button */}
-        <div className="mb-3 flex items-start gap-2">
+      <div className={`p-4 ${!isSource ? 'pr-10' : ''}`}>
+        {/* Title, Artist, Play Button, and Menu */}
+        <div className="mb-3 flex items-start gap-3">
           <div className="flex-1 min-w-0">
             <h3 className={`font-medium truncate ${isSource ? 'text-lg text-white' : 'text-sm text-gray-200'}`}>
               {song.title}
@@ -159,7 +159,7 @@ export default function NodeCard({ song, isSource = false, connectionId, onAddCo
 
       {/* Menu Button (for non-source cards) */}
       {!isSource && (
-        <div className="absolute top-2 right-2" ref={menuRef}>
+        <div className="absolute top-3 right-2" ref={menuRef}>
           <button
             onClick={(e) => {
               e.stopPropagation();

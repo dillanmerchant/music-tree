@@ -7,6 +7,7 @@ export default function AddConnectionModal() {
   const { 
     modalSong,
     songs, 
+    playlists,
     settings,
     closeAddConnectionModal,
     addConnection,
@@ -37,21 +38,39 @@ export default function AddConnectionModal() {
     return getRecommendations(modalSong, songs, settings.bpmTolerance);
   }, [modalSong, songs, settings.bpmTolerance]);
 
-  // Filter songs based on search and exclude already connected
+  // Which playlists each song belongs to (for search)
+  const songToPlaylistNames = useMemo(() => {
+    const map = new Map();
+    (playlists || []).forEach((pl) => {
+      (pl.songs || []).forEach((ps) => {
+        const id = ps.songId || ps.song?.id;
+        if (id) {
+          if (!map.has(id)) map.set(id, new Set());
+          map.get(id).add(pl.name?.toLowerCase() || '');
+        }
+      });
+    });
+    return map;
+  }, [playlists]);
+
+  // Filter songs based on search (title, artist, key, BPM, playlist) and exclude already connected
   const filteredSongs = useMemo(() => {
     return songs.filter((song) => {
       if (song.id === modalSong?.id) return false;
       if (existingConnectionIds.has(song.id)) return false;
-      if (searchQuery) {
-        const query = searchQuery.toLowerCase();
-        return (
-          song.title.toLowerCase().includes(query) ||
-          (song.artist && song.artist.toLowerCase().includes(query))
-        );
+      if (searchQuery.trim()) {
+        const query = searchQuery.toLowerCase().trim();
+        const matchTitle = song.title?.toLowerCase().includes(query);
+        const matchArtist = (song.artist && song.artist.toLowerCase().includes(query));
+        const matchKey = (song.key && song.key.toLowerCase().includes(query));
+        const matchBpm = (song.bpm != null && String(Math.round(song.bpm)).includes(query));
+        const playlistNames = songToPlaylistNames.get(song.id);
+        const matchPlaylist = playlistNames && [...playlistNames].some((name) => name && name.includes(query));
+        return matchTitle || matchArtist || matchKey || matchBpm || matchPlaylist;
       }
       return true;
     });
-  }, [songs, modalSong, existingConnectionIds, searchQuery]);
+  }, [songs, modalSong, existingConnectionIds, searchQuery, songToPlaylistNames]);
 
   // Sort songs with recommendations first if enabled
   const sortedSongs = useMemo(() => {
@@ -189,7 +208,7 @@ export default function AddConnectionModal() {
               type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Search songs..."
+              placeholder="Search by title, artist, key, BPM, or playlist..."
               className="w-full bg-background border border-border rounded-lg pl-10 pr-4 py-2
                 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-primary"
             />
