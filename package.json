@@ -99,7 +99,10 @@
       "target": "nsis"
     },
     "mac": {
-      "target": "dmg"
+      "target": {
+        "target": "dmg",
+        "arch": ["universal"] 
+      }
     },
     "nsis": {
       "oneClick": false,
