@@ -8,7 +8,8 @@
     "dev": "npm run db:setup && concurrently \"npm run dev:vite\" \"npm run dev:electron\"",
     "dev:vite": "vite --port 5174 --strictPort",
     "dev:electron": "wait-on http://localhost:5174 && env -u ELECTRON_RUN_AS_NODE electron .",
-    "build": "npm run build:seed-db && vite build && npm run build:electron",
+    "build": "npm run build:yt-dlp && npm run build:seed-db && vite build && npm run build:electron",
+    "build:yt-dlp": "node scripts/ensure-yt-dlp.js",
     "build:seed-db": "node scripts/create-seed-db.js",
     "build:electron": "electron-builder",
     "postinstall": "prisma generate",
@@ -96,13 +97,19 @@
       }
     ],
     "win": {
-      "target": "nsis"
+      "target": "nsis",
+      "extraResources": [
+        { "from": "build/bin/yt-dlp.exe", "to": "bin/yt-dlp.exe" }
+      ]
     },
     "mac": {
       "target": {
         "target": "dmg",
-        "arch": ["universal"] 
-      }
+        "arch": ["universal"]
+      },
+      "extraResources": [
+        { "from": "build/bin/yt-dlp", "to": "bin/yt-dlp" }
+      ]
     },
     "nsis": {
       "oneClick": false,

@@ -60,7 +60,14 @@ This will start both the Vite dev server and Electron app concurrently.
 npm run build
 ```
 
-This will create distributable packages in the `release/` directory.
+This will create distributable packages in the `release/` directory. **End users only need to download the DMG and run the app**; they do not run `npm install` or any commands.
+
+**Spotify/SoundCloud (macOS & Windows)**  
+The build step downloads yt-dlp binaries and bundles them so the installed app works without relying on node_modules paths. The script `scripts/ensure-yt-dlp.js` runs before the Electron build and fetches the latest yt-dlp release (needs network): **macOS** gets the universal binary (Intel + Apple Silicon), **Windows** gets `yt-dlp.exe`. One DMG or installer works on all target machines.
+
+**Testing on a different architecture**  
+- **Rosetta 2 (Apple Silicon Mac):** Build an Intel DMG with `npx electron-builder --mac --x64`, then run the built app. It will run under Rosetta and behave like an Intel Mac.
+- **CI:** Use GitHub Actions (or similar) with a matrix of runners (e.g. `macos-14` for ARM, `macos-14-x64` or a self-hosted Intel runner) to build and test both architectures.
 
 ### App icon
 

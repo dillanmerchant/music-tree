@@ -4,8 +4,28 @@ const { pathToFileURL } = require('url');
 const { PrismaClient } = require('@prisma/client');
 const fs = require('fs');
 const { execSync } = require('child_process');
-const youtubedl = require('youtube-dl-exec');
+const youtubeDlExec = require('youtube-dl-exec');
+const { create: createYoutubeDl } = youtubeDlExec;
 const NodeID3 = require('node-id3');
+
+// In packaged app we need an explicit path: use our bundled binary (macOS/Windows) or fall back to unpacked node binary.
+const YT_DLP_BIN_NAME = process.platform === 'win32' ? 'yt-dlp.exe' : 'yt-dlp';
+function getYoutubeDl() {
+  if (!app.isPackaged) {
+    return youtubeDlExec;
+  }
+  const bundledBin = path.join(process.resourcesPath, 'bin', YT_DLP_BIN_NAME);
+  if (fs.existsSync(bundledBin)) {
+    return createYoutubeDl(bundledBin);
+  }
+  const unpackedBin = path.join(process.resourcesPath, 'app.asar.unpacked', 'node_modules', 'youtube-dl-exec', 'bin', YT_DLP_BIN_NAME);
+  if (fs.existsSync(unpackedBin)) {
+    return createYoutubeDl(unpackedBin);
+  }
+  console.error('[yt-dlp] Packaged app: binary not found');
+  return youtubeDlExec;
+}
+const youtubedl = getYoutubeDl();
 
 // Custom fetch for Spotify: use Electron's net.fetch (no CORS) with browser-like headers
 const spotifyFetch = (url, opts = {}) => {
@@ -763,6 +783,16 @@ ipcMain.handle('download-from-url', async (_, { url, playlistName }) => {
 
     if (!isSpotify && !isSoundCloud) {
       return { success: false, error: 'Unrecognized URL. Only Spotify and SoundCloud links are supported.', logs };
+    }
+
+    if (app.isPackaged) {
+      const bundledBin = path.join(process.resourcesPath, 'bin', YT_DLP_BIN_NAME);
+      const unpackedBin = path.join(process.resourcesPath, 'app.asar.unpacked', 'node_modules', 'youtube-dl-exec', 'bin', YT_DLP_BIN_NAME);
+      const hasBin = fs.existsSync(bundledBin) || fs.existsSync(unpackedBin);
+      if (!hasBin) {
+        push('yt-dlp binary not found in packaged app.');
+        return { success: false, error: 'Download component (yt-dlp) is missing. Reinstall the app.', logs };
+      }
     }
 
     const defaultOutputTemplate = path.join(downloadsDir, '%(title)s.%(ext)s').replace(/\\/g, '/');
